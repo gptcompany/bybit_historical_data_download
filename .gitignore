@@ -92,3 +92,11 @@ implied_volatility_data/
 test_output/
 test_data/
 *.backup
+
+# CLI data directories
+data/
+nautilus_data/
+download_earliest_data.py
+download_nautilus_data.py
+fix_funding_rates.py
+bybit_cli_downloader.py

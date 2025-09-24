@@ -1,281 +1,276 @@
-# ByBit Data Downloader
+# Bybit Data Downloader & Unified CLI
 
-A high-performance Python package for downloading historical data from ByBit exchange with comprehensive market metrics support.
+A high-performance Python package and **complete CLI solution** for downloading historical data from Bybit exchange with comprehensive market metrics support and resume capability.
 
-## Features
+## ✨ Key Features
 
-- ✅ Download historical trade and orderbook data
-- ✅ **NEW: Download open interest data for liquidation analysis**
-- ✅ **NEW: Download long-short ratio data for sentiment analysis**
-- ✅ **NEW: Download implied volatility data for options analysis**
-- ✅ **NEW: Download funding rate history for perpetual contracts**
-- ✅ Support for spot and contract markets
-- ✅ High-performance parallel downloads using threading
-- ✅ Automatic date range splitting for large requests (7-day chunks)
-- ✅ Robust error handling and retry logic with exponential backoff
-- ✅ File size verification and duplicate detection
-- ✅ Comprehensive logging and progress tracking
-- ✅ Easy-to-use Python module with clean API
+- **🚀 Complete CLI Interface**: Command-line downloader similar to binance-history-data-downloader
+- **🔄 Resume Capability**: Intelligent download state tracking with SHA256 verification
+- **📁 Fixed Directory Structure**: Organized data storage with predictable paths
+- **📊 All Data Types**: Historical data (trade, orderbook) + Market metrics (funding, OI, etc.)
+- **⚡ High Performance**: Configurable parallel downloads with robust error handling
+- **📋 Comprehensive Logging**: Detailed logs, progress tracking, and reports
+- **🛠️ Production Ready**: Extensive testing and error handling
 
-## Project Structure
+## 📦 Project Structure
 
 ```
 bybit_data_downloader/
-├── src/                                    # Core source code
+├── src/                                    # Core Python library
 │   ├── bybit_data_downloader/             # Main package
 │   │   ├── __init__.py                    # Package initialization
 │   │   ├── historical/                    # Historical data downloaders
-│   │   │   ├── __init__.py
 │   │   │   └── ByBitHistoricalDataDownloader.py
 │   │   └── live/                          # Real-time market metrics
-│   │       ├── __init__.py
-│   │       ├── ByBitUnifiedDownloader.py  # Unified downloader interface
 │   │       ├── ByBitOpenInterestDownloader.py
 │   │       ├── ByBitLongShortRatioDownloader.py
 │   │       ├── ByBitFundingRateDownloader.py
 │   │       └── ByBitImpliedVolatilityDownloader.py
-│   └── setup.py                           # Package setup configuration
+│   └── setup.py                           # Package setup
+├── CLI Interface                          # NEW: Complete CLI solution
+│   ├── bybit_unified_cli.py               # Main CLI script
+│   ├── CLI_DOCUMENTATION.md               # Complete CLI documentation
+│   └── QUICK_START_EXAMPLES.sh            # Automated test examples
 ├── tests/                                 # Test suite
-│   ├── test_historical_data_comprehensive.py
-│   ├── test_unified_downloader.py
-│   ├── test_bybit_open_interest.py
-│   ├── test_quick_metrics.py
-│   ├── test_input_validation.py
-│   ├── test_retry_logic.py
-│   └── test_backward_compatibility.py
-├── scripts/                               # Usage examples and utilities
-│   ├── example_download.py               # Basic download example
-│   ├── example_all_metrics.py            # Comprehensive metrics demo
-│   └── example_open_interest.py          # Open interest analysis
-├── docs/                                  # Documentation
-│   ├── COMPREHENSIVE_TEST_REPORT.md      # Testing documentation
-│   ├── HISTORICAL_DATA_AVAILABILITY.md   # Data availability guide
-│   ├── OPEN_INTEREST_DATA_SOURCES.md     # Open interest documentation
-│   ├── REFACTOR_CLASSES_PLAN.md          # Architecture documentation
-│   ├── SESSION_RECOVERY.md               # Session management
-│   └── SESSION_SUMMARY.md                # Usage summaries
-├── config/                                # Configuration files (placeholder)
-├── requirements.txt                       # Python dependencies
-├── .gitignore                            # Git ignore rules
-└── README.md                             # This file
+├── scripts/                               # Python API examples
+├── docs/                                  # Documentation & analysis
+├── requirements.txt                       # Dependencies
+└── data/                                  # CLI download directory (auto-created)
+    ├── historical/                        # Historical trade/orderbook data
+    ├── market_metrics/                    # Market data (funding, OI, etc.)
+    ├── logs/                              # Execution logs
+    ├── state/                             # Resume capability
+    └── reports/                           # Download reports
 ```
 
-## Data Directories (Auto-created, Git-ignored)
+## 📁 Data Directory Structure (Auto-created)
 
-The following directories are automatically created during execution and excluded from git:
+The CLI creates a fixed, organized directory structure:
 
-- `downloaded_data/` - Historical trade and orderbook data
-- `open_interest_data/` - Open interest historical data
-- `funding_rate_data/` - Funding rate historical data
-- `long_short_ratio_data/` - Long-short ratio sentiment data
-- `implied_volatility_data/` - Options implied volatility data
-- `test_output/` - Test result files
-- `test_data/` - Test dataset files
+```
+data/
+├── historical/
+│   ├── trade/
+│   │   ├── spot/{SYMBOL}/           # Spot trade data (CSV.gz)
+│   │   └── contract/{SYMBOL}/       # Contract trade data (CSV.gz)
+│   └── orderbook/
+│       ├── spot/{SYMBOL}/           # Spot orderbook data (ZIP/JSON)
+│       └── contract/{SYMBOL}/       # Contract orderbook Level-500 (ZIP/JSON)
+├── market_metrics/
+│   ├── funding_rates/               # Funding rate historical data (JSON)
+│   ├── open_interest/               # Open interest data (JSON)
+│   ├── long_short_ratio/            # Long-short ratio sentiment (JSON)
+│   └── implied_volatility/          # Options implied volatility (JSON)
+├── logs/                            # Timestamped execution logs
+├── state/                           # Resume capability (download_state.json)
+└── reports/                         # JSON download reports with statistics
+```
 
-## Installation
+## 🚀 Quick Start
 
-### From Source
+### Installation
 ```bash
-git clone https://github.com/gptprojectmanager/bybit_historical_data_download.git
-cd bybit_historical_data_download
+cd bybit_data_downloader
 pip install -r requirements.txt
 ```
 
-### Dependencies
-- Python 3.8+
-- httpx>=0.24.0
+### CLI Usage Examples
 
-## Quick Start
+**Show help and directory structure:**
+```bash
+python bybit_unified_cli.py --help
+python bybit_unified_cli.py --show-structure
+```
 
-### Basic Usage
+**Download BTCUSDT funding rates (365 days):**
+```bash
+python bybit_unified_cli.py --symbols BTCUSDT --data-types funding --days-back 365
+```
 
-#### Historical Trade/Orderbook Data
+**Download historical trade data from earliest available:**
+```bash
+python bybit_unified_cli.py \
+  --symbols BTCUSDT \
+  --data-types trade \
+  --market contract \
+  --start-date 2020-05-01 \
+  --end-date 2020-05-10
+```
+
+**Download orderbook data (Level-500):**
+```bash
+python bybit_unified_cli.py \
+  --symbols BTCUSDT \
+  --data-types orderbook \
+  --market contract \
+  --start-date 2024-01-01 \
+  --end-date 2024-01-03
+```
+
+**Download mixed data types with resume capability:**
+```bash
+python bybit_unified_cli.py \
+  --symbols "BTCUSDT,ETHUSDT" \
+  --data-types "trade,funding,openinterest" \
+  --market contract \
+  --start-date 2024-01-01 \
+  --end-date 2024-01-05 \
+  --days-back 30
+```
+
+### Quick Test Suite
+```bash
+./QUICK_START_EXAMPLES.sh    # Runs automated test examples
+```
+
+## 📊 Supported Data Types & Availability
+
+| Data Type | Markets | Earliest Available | File Format | CLI Flag |
+|-----------|---------|-------------------|-------------|----------|
+| **Trade Data** | Spot, Contract | 2020-05-01 (Contract), 2022-12-01 (Spot) | CSV.gz | `trade` |
+| **Orderbook** | Spot, Contract | 2024-01-01 (Contract) | ZIP/JSON | `orderbook` |
+| **Funding Rates** | Linear, Inverse | Real-time + ~3 years | JSON | `funding` |
+| **Open Interest** | Linear, Inverse | Real-time + historical | JSON | `openinterest` |
+| **Long-Short Ratio** | Linear | Real-time + historical | JSON | `longshortratio` |
+| **Implied Volatility** | Option | Real-time + historical | JSON | `impliedvolatility` |
+
+## 🔄 Resume Capability
+
+The CLI automatically resumes interrupted downloads:
+
+- **State Tracking**: `data/state/download_state.json` tracks completed files
+- **SHA256 Verification**: Ensures file integrity before skipping
+- **Partial Completion**: Continues from last completed file in date range
+- **Clear State**: `--clear-state` flag forces re-download
+
+**Resume Example:**
+```bash
+# First run (interrupted)
+python bybit_unified_cli.py --symbols BTCUSDT --data-types trade --market contract --start-date 2020-05-01 --end-date 2020-05-10
+
+# Second run (automatically resumes)
+python bybit_unified_cli.py --symbols BTCUSDT --data-types trade --market contract --start-date 2020-05-01 --end-date 2020-05-10
+# Output: ✅ Download already completed: BTCUSDT2020-05-01.csv.gz
+```
+
+## 📋 Comprehensive Reporting
+
+Every CLI execution generates:
+
+- **Execution Log**: `data/logs/bybit_unified_cli_TIMESTAMP.log`
+- **Download Report**: `data/reports/download_report_TIMESTAMP.json`
+
+**Sample Report:**
+```json
+{
+  "timestamp": "2025-09-25T00:10:06",
+  "summary": {
+    "total_downloads": 3,
+    "successful": 3,
+    "failed": 0,
+    "success_rate": "100.0%"
+  },
+  "results": {
+    "BTCUSDT_trade_contract": {
+      "status": "completed",
+      "stats": {"total_files": 10, "downloaded": 10, "failed": 0}
+    }
+  }
+}
+```
+
+## ⚡ Performance & Reliability
+
+- **Parallel Downloads**: Configurable concurrent downloads (default: 5)
+- **Timeout Protection**: Configurable request timeouts (default: 60s)
+- **Retry Logic**: Automatic retries with exponential backoff
+- **Rate Limiting**: Respects Bybit API limits
+- **File Integrity**: Size verification and duplicate detection
+- **Error Handling**: Comprehensive error recovery
+
+## 🛠️ Python Library API
+
+For programmatic access, use the Python library:
+
 ```python
-from src.bybit_data_downloader import ByBitHistoricalDataDownloader
+from bybit_data_downloader import ByBitHistoricalDataDownloader
+from bybit_data_downloader import ByBitFundingRateDownloader
 
-# Initialize downloader with custom parallel downloads
-downloader = ByBitHistoricalDataDownloader(parallel_downloads=10, timeout=30)
-
-# Show help information
-downloader.help()
-
-# Fetch available symbols for a market
-symbols = downloader.fetch_symbols('spot', 'trade')
-print(f"Available symbols: {symbols[:10]}")
-
-# Download historical data
+# Historical data
+downloader = ByBitHistoricalDataDownloader(parallel_downloads=5)
 stats = downloader.download_data(
     symbol='BTCUSDT',
-    start_date='2025-07-01',
-    end_date='2025-07-07',
-    biz_type='spot',
-    product_id='trade',
-    output_dir='./downloaded_data'
+    start_date='2020-05-01',
+    end_date='2020-05-10',
+    biz_type='contract',
+    product_id='trade'
 )
 
-print(f"Downloaded {stats['downloaded']}/{stats['total_files']} files successfully")
-```
-
-#### Market Metrics Data
-
-##### Open Interest Data
-```python
-from src.bybit_data_downloader import ByBitOpenInterestDownloader
-
-# Initialize open interest downloader
-oi_downloader = ByBitOpenInterestDownloader(timeout=30)
-
-# Get current open interest
-current_oi = oi_downloader.get_open_interest('BTCUSDT', 'linear')
-print(f"Current BTC Open Interest: {current_oi['result']['list'][0]['openInterest']}")
-
-# Download historical open interest (last 30 days)
-historical_data = oi_downloader.get_historical_open_interest(
-    symbol='BTCUSDT',
-    category='linear',
-    interval_time='1d',
-    days_back=30
-)
-```
-
-##### Long-Short Ratio Data (Sentiment Analysis)
-```python
-from src.bybit_data_downloader import ByBitLongShortRatioDownloader
-
-# Initialize long-short ratio downloader
-lsr_downloader = ByBitLongShortRatioDownloader(timeout=30)
-
-# Get current sentiment
-current_ratio = lsr_downloader.get_long_short_ratio('BTCUSDT', 'linear')
-buy_ratio = float(current_ratio['result']['list'][0]['buyRatio'])
-sell_ratio = float(current_ratio['result']['list'][0]['sellRatio'])
-print(f"Long: {buy_ratio:.1%}, Short: {sell_ratio:.1%}")
-
-# Download historical sentiment data
-file_path = lsr_downloader.download_and_save(
-    symbol='BTCUSDT',
-    category='linear',
-    period='1d',
-    limit=200
-)
-```
-
-##### Funding Rate Data
-```python
-from src.bybit_data_downloader import ByBitFundingRateDownloader
-
-# Initialize funding rate downloader
-fr_downloader = ByBitFundingRateDownloader(timeout=30)
-
-# Get current funding rate
-current_rate = fr_downloader.get_funding_rate('BTCUSDT', 'linear')
-rate = float(current_rate['result']['list'][0]['fundingRate'])
-print(f"Current BTC Funding Rate: {rate:.6%}")
-
-# Download historical funding rates
+# Funding rates
+fr_downloader = ByBitFundingRateDownloader()
 file_path = fr_downloader.download_and_save(
     symbol='BTCUSDT',
     category='linear',
-    limit=200
+    days_back=365
 )
 ```
 
-##### Implied Volatility Data (Options)
-```python
-from src.bybit_data_downloader import ByBitImpliedVolatilityDownloader
+## 📖 Documentation
 
-# Initialize implied volatility downloader
-iv_downloader = ByBitImpliedVolatilityDownloader(timeout=30)
+- **CLI_DOCUMENTATION.md**: Complete CLI reference with examples
+- **docs/HISTORICAL_DATA_AVAILABILITY.md**: Data availability analysis
+- **docs/OPEN_INTEREST_DATA_SOURCES.md**: Market data sources guide
 
-# Get current implied volatility
-current_iv = iv_downloader.get_implied_volatility('BTC', 'option')
-print(f"Current BTC Implied Volatility: {current_iv}")
-
-# Download historical implied volatility
-file_path = iv_downloader.download_and_save(
-    baseCoin='BTC',
-    category='option',
-    limit=200
-)
-```
-
-### Unified Downloader Interface
-
-For convenience, you can use the unified interface to access all downloaders:
-
-```python
-from src.bybit_data_downloader import ByBitUnifiedDownloader
-
-# Initialize unified downloader
-unified = ByBitUnifiedDownloader()
-
-# Access all downloaders through unified interface
-historical_data = unified.historical.download_data(...)
-open_interest = unified.open_interest.get_open_interest(...)
-funding_rates = unified.funding_rate.get_funding_rate(...)
-long_short = unified.long_short_ratio.get_long_short_ratio(...)
-implied_vol = unified.implied_volatility.get_implied_volatility(...)
-```
-
-## Available Examples
-
-Run the example scripts to see the downloaders in action:
+## 🧪 Testing
 
 ```bash
-# Basic download example
-python scripts/example_download.py
-
-# Comprehensive metrics demo
-python scripts/example_all_metrics.py
-
-# Open interest analysis example
-python scripts/example_open_interest.py
-```
-
-## Testing
-
-Run the comprehensive test suite:
-
-```bash
-# Run all tests
+# Run Python library tests
 python -m pytest tests/ -v
 
-# Run specific test categories
+# Run CLI quick tests
+./QUICK_START_EXAMPLES.sh
+
+# Test specific functionality
 python tests/test_historical_data_comprehensive.py
-python tests/test_unified_downloader.py
-python tests/test_quick_metrics.py
 ```
 
-## Performance & Reliability
+## 🎯 Use Cases
 
-- **High-Performance**: Parallel downloads with configurable concurrency
-- **Robust Error Handling**: Automatic retries with exponential backoff
-- **Data Integrity**: File size verification and duplicate detection
-- **Rate Limiting**: Respects ByBit API rate limits
-- **Comprehensive Logging**: Detailed progress tracking and error reporting
+### For Nautilus Trader
+- **Order Book Deltas**: Level-500 orderbook data for backtesting
+- **Trade Ticks**: Tick-by-tick execution data
+- **Funding Rates**: Perpetual contract funding history
+- **Quote Ticks**: Derivable from orderbook bid1/ask1 prices
 
-## Supported Data Types
+### For Research & Analysis
+- **Liquidation Analysis**: Open interest + funding rates
+- **Market Sentiment**: Long-short ratios and positioning
+- **Options Analysis**: Implied volatility historical data
+- **Price Discovery**: Complete trade execution history
 
-### Historical Data
-- **Trade Data**: Individual trade records with price, quantity, and timestamp
-- **Orderbook Data**: Level 2 order book snapshots at regular intervals
+### For Production Trading
+- **Resume Capability**: Robust data collection pipelines
+- **Organized Structure**: Predictable file locations for automation
+- **Comprehensive Logging**: Audit trails and error tracking
+- **Performance**: High-speed parallel downloads
 
-### Market Metrics
-- **Open Interest**: Total number of outstanding derivative contracts
-- **Long-Short Ratio**: Market sentiment indicator showing long vs short positions
-- **Funding Rate**: Periodic payments between long and short positions
-- **Implied Volatility**: Options market volatility expectations
+## 🆚 Comparison with Binance Downloader
 
-### Market Categories
-- **Spot**: Spot trading pairs
-- **Linear**: USDT-margined perpetual contracts
-- **Inverse**: Coin-margined perpetual contracts
-- **Option**: Options contracts
+| Feature | Bybit Unified CLI | Binance Downloader |
+|---------|------------------|-------------------|
+| CLI Interface | ✅ Full featured | ✅ Full featured |
+| Resume Capability | ✅ SHA256 + State | ✅ Basic resume |
+| Directory Structure | ✅ Fixed organized | ✅ Organized |
+| Data Types | ✅ Historical + Market | ✅ Historical focus |
+| Market Metrics | ✅ Full support | ❌ Limited |
+| Error Handling | ✅ Production grade | ✅ Robust |
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
+## 📄 License
 
 This project is open source and available under the MIT License.
+
+---
+
+## 🎉 Status: Production Ready
+
+**Gap successfully filled!** This CLI provides the same functionality as binance-history-data-downloader with enhanced features specifically for Bybit data.
