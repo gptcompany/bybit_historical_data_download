@@ -1,17 +1,76 @@
 # ByBit Data Downloader
 
-A high-performance Python package for downloading historical data from ByBit exchange.
+A high-performance Python package for downloading historical data from ByBit exchange with comprehensive market metrics support.
 
 ## Features
 
 - ✅ Download historical trade and orderbook data
-- ✅ Support for spot and contract markets  
+- ✅ **NEW: Download open interest data for liquidation analysis**
+- ✅ **NEW: Download long-short ratio data for sentiment analysis**
+- ✅ **NEW: Download implied volatility data for options analysis**
+- ✅ **NEW: Download funding rate history for perpetual contracts**
+- ✅ Support for spot and contract markets
 - ✅ High-performance parallel downloads using threading
 - ✅ Automatic date range splitting for large requests (7-day chunks)
 - ✅ Robust error handling and retry logic with exponential backoff
 - ✅ File size verification and duplicate detection
 - ✅ Comprehensive logging and progress tracking
 - ✅ Easy-to-use Python module with clean API
+
+## Project Structure
+
+```
+bybit_data_downloader/
+├── src/                                    # Core source code
+│   ├── bybit_data_downloader/             # Main package
+│   │   ├── __init__.py                    # Package initialization
+│   │   ├── historical/                    # Historical data downloaders
+│   │   │   ├── __init__.py
+│   │   │   └── ByBitHistoricalDataDownloader.py
+│   │   └── live/                          # Real-time market metrics
+│   │       ├── __init__.py
+│   │       ├── ByBitUnifiedDownloader.py  # Unified downloader interface
+│   │       ├── ByBitOpenInterestDownloader.py
+│   │       ├── ByBitLongShortRatioDownloader.py
+│   │       ├── ByBitFundingRateDownloader.py
+│   │       └── ByBitImpliedVolatilityDownloader.py
+│   └── setup.py                           # Package setup configuration
+├── tests/                                 # Test suite
+│   ├── test_historical_data_comprehensive.py
+│   ├── test_unified_downloader.py
+│   ├── test_bybit_open_interest.py
+│   ├── test_quick_metrics.py
+│   ├── test_input_validation.py
+│   ├── test_retry_logic.py
+│   └── test_backward_compatibility.py
+├── scripts/                               # Usage examples and utilities
+│   ├── example_download.py               # Basic download example
+│   ├── example_all_metrics.py            # Comprehensive metrics demo
+│   └── example_open_interest.py          # Open interest analysis
+├── docs/                                  # Documentation
+│   ├── COMPREHENSIVE_TEST_REPORT.md      # Testing documentation
+│   ├── HISTORICAL_DATA_AVAILABILITY.md   # Data availability guide
+│   ├── OPEN_INTEREST_DATA_SOURCES.md     # Open interest documentation
+│   ├── REFACTOR_CLASSES_PLAN.md          # Architecture documentation
+│   ├── SESSION_RECOVERY.md               # Session management
+│   └── SESSION_SUMMARY.md                # Usage summaries
+├── config/                                # Configuration files (placeholder)
+├── requirements.txt                       # Python dependencies
+├── .gitignore                            # Git ignore rules
+└── README.md                             # This file
+```
+
+## Data Directories (Auto-created, Git-ignored)
+
+The following directories are automatically created during execution and excluded from git:
+
+- `downloaded_data/` - Historical trade and orderbook data
+- `open_interest_data/` - Open interest historical data
+- `funding_rate_data/` - Funding rate historical data
+- `long_short_ratio_data/` - Long-short ratio sentiment data
+- `implied_volatility_data/` - Options implied volatility data
+- `test_output/` - Test result files
+- `test_data/` - Test dataset files
 
 ## Installation
 
@@ -29,8 +88,10 @@ pip install -r requirements.txt
 ## Quick Start
 
 ### Basic Usage
+
+#### Historical Trade/Orderbook Data
 ```python
-from bybit_data_downloader import ByBitHistoricalDataDownloader
+from src.bybit_data_downloader import ByBitHistoricalDataDownloader
 
 # Initialize downloader with custom parallel downloads
 downloader = ByBitHistoricalDataDownloader(parallel_downloads=10, timeout=30)
@@ -49,243 +110,172 @@ stats = downloader.download_data(
     end_date='2025-07-07',
     biz_type='spot',
     product_id='trade',
-    output_dir='./bybit_data'
+    output_dir='./downloaded_data'
 )
 
 print(f"Downloaded {stats['downloaded']}/{stats['total_files']} files successfully")
 ```
 
-### Import Options
+#### Market Metrics Data
+
+##### Open Interest Data
 ```python
-# Import main class directly
-from bybit_data_downloader import ByBitHistoricalDataDownloader
+from src.bybit_data_downloader import ByBitOpenInterestDownloader
 
-# Import from submodule
-from bybit_data_downloader.historical import ByBitHistoricalDataDownloader
+# Initialize open interest downloader
+oi_downloader = ByBitOpenInterestDownloader(timeout=30)
 
-# Import entire module
-import bybit_data_downloader
-downloader = bybit_data_downloader.ByBitHistoricalDataDownloader()
-```
+# Get current open interest
+current_oi = oi_downloader.get_open_interest('BTCUSDT', 'linear')
+print(f"Current BTC Open Interest: {current_oi['result']['list'][0]['openInterest']}")
 
-## API Reference
-
-### ByBitHistoricalDataDownloader
-
-#### Constructor Parameters
-- `parallel_downloads` (int): Number of concurrent downloads (1-20 recommended, default: 5)
-- `timeout` (int): Request timeout in seconds (default: 30)
-
-#### Methods
-
-##### `help() -> None`
-Display comprehensive usage information and parameter details.
-
-##### `fetch_symbols(biz_type: str, product_id: str) -> List[str]`
-Fetch available trading symbols for specified market.
-
-**Parameters:**
-- `biz_type`: Market type ('spot' or 'contract')
-- `product_id`: Data type ('trade' or 'orderbook')
-
-**Returns:** List of available symbol strings
-
-**Raises:** 
-- `ValueError`: Invalid parameters
-- `httpx.RequestError`: API request failure
-
-##### `download_data(symbol, start_date, end_date, biz_type, product_id, output_dir) -> Dict[str, int]`
-Download historical data with automatic chunking and parallel processing.
-
-**Parameters:**
-- `symbol` (str): Trading pair symbol (e.g., 'BTCUSDT', 'ETHUSDT')
-- `start_date` (str): Start date in 'YYYY-MM-DD' format
-- `end_date` (str): End date in 'YYYY-MM-DD' format  
-- `biz_type` (str): Market type ('spot' or 'contract')
-- `product_id` (str): Data type ('trade' or 'orderbook')
-- `output_dir` (str): Directory to save files (default: './data')
-
-**Returns:** Dictionary with download statistics:
-```python
-{
-    'total_files': int,    # Total files found
-    'downloaded': int,     # Successfully downloaded
-    'failed': int         # Failed downloads
-}
-```
-
-**Features:**
-- Automatic 7-day date range splitting (API limitation)
-- Parallel downloads using ThreadPoolExecutor
-- File size verification and duplicate detection
-- Retry logic with exponential backoff (3 attempts)
-- Creates organized directory structure: `{output_dir}/{biz_type}/{product_id}/{symbol}/`
-
-## Supported Markets
-
-| biz_type | product_id | Description |
-|----------|------------|-------------|
-| spot | trade | Spot market trading data |
-| spot | orderbook | Spot market orderbook data |
-| contract | trade | Futures/Derivatives trading data |
-| contract | orderbook | Futures/Derivatives orderbook data |
-
-## File Organization
-
-Downloaded files are automatically organized in this structure:
-```
-output_dir/
-├── spot/
-│   ├── trade/
-│   │   └── BTCUSDT/
-│   │       ├── BTCUSDT_2025-07-01_trade.csv.gz
-│   │       └── BTCUSDT_2025-07-02_trade.csv.gz
-│   └── orderbook/
-│       └── BTCUSDT/
-└── contract/
-    ├── trade/
-    └── orderbook/
-```
-
-## Advanced Features
-
-### Error Handling
-- Automatic retry with exponential backoff
-- File size verification against API metadata
-- Graceful handling of network timeouts
-- Comprehensive logging for debugging
-
-### Performance Optimization
-- Parallel downloads using ThreadPoolExecutor
-- Configurable concurrency levels
-- Efficient memory usage with streaming downloads
-- Smart duplicate file detection
-
-### Date Range Management
-- Automatic splitting of large date ranges into 7-day chunks
-- Validation of date formats and logical ranges
-- Efficient batch processing of multiple date ranges
-
-## Examples
-
-### Example 1: Basic Download
-```python
-from bybit_data_downloader import BybitDataDownloader
-
-downloader = BybitDataDownloader()
-stats = downloader.download_data(
+# Download historical open interest (last 30 days)
+historical_data = oi_downloader.get_historical_open_interest(
     symbol='BTCUSDT',
-    start_date='2025-07-01', 
-    end_date='2025-07-07',
-    biz_type='spot',
-    product_id='trade',
-    output_dir='./data'
+    category='linear',
+    interval_time='1d',
+    days_back=30
 )
 ```
 
-### Example 2: High-Performance Bulk Download
+##### Long-Short Ratio Data (Sentiment Analysis)
 ```python
-downloader = BybitDataDownloader(parallel_downloads=15, timeout=60)
+from src.bybit_data_downloader import ByBitLongShortRatioDownloader
 
-# Download multiple months of data (automatically chunked)
-stats = downloader.download_data(
-    symbol='ETHUSDT',
-    start_date='2025-01-01',
-    end_date='2025-06-30', 
-    biz_type='spot',
-    product_id='trade',
-    output_dir='/data/crypto'
+# Initialize long-short ratio downloader
+lsr_downloader = ByBitLongShortRatioDownloader(timeout=30)
+
+# Get current sentiment
+current_ratio = lsr_downloader.get_long_short_ratio('BTCUSDT', 'linear')
+buy_ratio = float(current_ratio['result']['list'][0]['buyRatio'])
+sell_ratio = float(current_ratio['result']['list'][0]['sellRatio'])
+print(f"Long: {buy_ratio:.1%}, Short: {sell_ratio:.1%}")
+
+# Download historical sentiment data
+file_path = lsr_downloader.download_and_save(
+    symbol='BTCUSDT',
+    category='linear',
+    period='1d',
+    limit=200
 )
 ```
 
-### Example 3: Explore Available Markets
+##### Funding Rate Data
 ```python
-downloader = BybitDataDownloader()
+from src.bybit_data_downloader import ByBitFundingRateDownloader
 
-# Get all spot trading symbols
-spot_symbols = downloader.fetch_symbols('spot', 'trade')
-print(f"Spot trading symbols: {len(spot_symbols)}")
+# Initialize funding rate downloader
+fr_downloader = ByBitFundingRateDownloader(timeout=30)
 
-# Get contract symbols
-contract_symbols = downloader.fetch_symbols('contract', 'trade')  
-print(f"Contract symbols: {len(contract_symbols)}")
+# Get current funding rate
+current_rate = fr_downloader.get_funding_rate('BTCUSDT', 'linear')
+rate = float(current_rate['result']['list'][0]['fundingRate'])
+print(f"Current BTC Funding Rate: {rate:.6%}")
+
+# Download historical funding rates
+file_path = fr_downloader.download_and_save(
+    symbol='BTCUSDT',
+    category='linear',
+    limit=200
+)
 ```
 
-See `example_download.py` for a complete working example.
+##### Implied Volatility Data (Options)
+```python
+from src.bybit_data_downloader import ByBitImpliedVolatilityDownloader
 
-## Development
+# Initialize implied volatility downloader
+iv_downloader = ByBitImpliedVolatilityDownloader(timeout=30)
 
-### Running Tests
+# Get current implied volatility
+current_iv = iv_downloader.get_implied_volatility('BTC', 'option')
+print(f"Current BTC Implied Volatility: {current_iv}")
+
+# Download historical implied volatility
+file_path = iv_downloader.download_and_save(
+    baseCoin='BTC',
+    category='option',
+    limit=200
+)
+```
+
+### Unified Downloader Interface
+
+For convenience, you can use the unified interface to access all downloaders:
+
+```python
+from src.bybit_data_downloader import ByBitUnifiedDownloader
+
+# Initialize unified downloader
+unified = ByBitUnifiedDownloader()
+
+# Access all downloaders through unified interface
+historical_data = unified.historical.download_data(...)
+open_interest = unified.open_interest.get_open_interest(...)
+funding_rates = unified.funding_rate.get_funding_rate(...)
+long_short = unified.long_short_ratio.get_long_short_ratio(...)
+implied_vol = unified.implied_volatility.get_implied_volatility(...)
+```
+
+## Available Examples
+
+Run the example scripts to see the downloaders in action:
+
 ```bash
-python3 test_import.py
+# Basic download example
+python scripts/example_download.py
+
+# Comprehensive metrics demo
+python scripts/example_all_metrics.py
+
+# Open interest analysis example
+python scripts/example_open_interest.py
 ```
 
-### Project Structure
-```
-bybit_data_downloader/
-├── bybit_data_downloader/
-│   ├── __init__.py
-│   ├── historical/
-│   │   ├── __init__.py
-│   │   └── ByBitDataDownloader.py    # Main implementation
-│   └── live/
-│       └── __init__.py               # Future live data features
-├── example_download.py               # Working example
-├── test_import.py                    # Import verification
-├── setup.py                         # Package installation
-├── requirements.txt                  # Dependencies
-└── README.md
+## Testing
+
+Run the comprehensive test suite:
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific test categories
+python tests/test_historical_data_comprehensive.py
+python tests/test_unified_downloader.py
+python tests/test_quick_metrics.py
 ```
 
-## Technical Details
+## Performance & Reliability
 
-### Threading Model
-- Uses `ThreadPoolExecutor` for parallel downloads
-- Configurable worker thread count
-- Thread-safe logging and error handling
+- **High-Performance**: Parallel downloads with configurable concurrency
+- **Robust Error Handling**: Automatic retries with exponential backoff
+- **Data Integrity**: File size verification and duplicate detection
+- **Rate Limiting**: Respects ByBit API rate limits
+- **Comprehensive Logging**: Detailed progress tracking and error reporting
 
-### API Interaction
-- Direct integration with ByBit's historical data API
-- Proper HTTP headers mimicking browser requests
-- Automatic rate limiting through thread pool size
+## Supported Data Types
 
-### Data Integrity
-- SHA/size verification for downloaded files
-- Automatic cleanup of corrupted downloads
-- Resume capability for interrupted downloads
+### Historical Data
+- **Trade Data**: Individual trade records with price, quantity, and timestamp
+- **Orderbook Data**: Level 2 order book snapshots at regular intervals
 
-## Troubleshooting
+### Market Metrics
+- **Open Interest**: Total number of outstanding derivative contracts
+- **Long-Short Ratio**: Market sentiment indicator showing long vs short positions
+- **Funding Rate**: Periodic payments between long and short positions
+- **Implied Volatility**: Options market volatility expectations
 
-### Common Issues
-1. **Network Timeouts**: Increase `timeout` parameter
-2. **Too Many Failures**: Reduce `parallel_downloads` count
-3. **Disk Space**: Monitor free space for large date ranges
-4. **API Rate Limits**: Use default `parallel_downloads=5` or lower
-
-### Logging
-Enable detailed logging to diagnose issues:
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
-## License
-
-MIT License
+### Market Categories
+- **Spot**: Spot trading pairs
+- **Linear**: USDT-margined perpetual contracts
+- **Inverse**: Coin-margined perpetual contracts
+- **Option**: Options contracts
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/new-feature`)
-3. Commit changes (`git commit -am 'Add new feature'`)
-4. Push to branch (`git push origin feature/new-feature`)
-5. Create Pull Request
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-## Changelog
+## License
 
-### Version 1.0.0
-- Initial release with historical data download
-- Synchronous implementation with threading
-- Automatic date range chunking
-- Robust error handling and retry logic
-- File organization and integrity verification
+This project is open source and available under the MIT License.
