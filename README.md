@@ -76,8 +76,8 @@ The following directories are automatically created during execution and exclude
 
 ### From Source
 ```bash
-git clone https://github.com/AdityaLakkad/bybit_data_downloader.git
-cd bybit_data_downloader
+git clone https://github.com/gptprojectmanager/bybit_historical_data_download.git
+cd bybit_historical_data_download
 pip install -r requirements.txt
 ```
 
