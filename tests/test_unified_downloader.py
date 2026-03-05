@@ -52,8 +52,15 @@ class TestByBitUnifiedDownloaderGetData:
         assert hasattr(downloader, 'get_data')
         assert callable(getattr(downloader, 'get_data'))
 
-    def test_get_data_accepts_symbol_parameter(self):
+    @patch('httpx.Client.get')
+    def test_get_data_accepts_symbol_parameter(self, mock_get):
         """Test that get_data method accepts symbol parameter."""
+        # Mock API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"retCode": 0, "retMsg": "OK", "result": {"list": []}}
+        mock_get.return_value = mock_response
+
         downloader = ByBitUnifiedDownloader('open_interest')
 
         # Should be able to call with symbol parameter without errors
@@ -63,6 +70,7 @@ class TestByBitUnifiedDownloaderGetData:
         # Should return a dictionary (either successful response or error)
         assert isinstance(result, dict)
         assert 'retCode' in result  # Standard Bybit API response structure
+        assert mock_get.called
 
 
 if __name__ == "__main__":

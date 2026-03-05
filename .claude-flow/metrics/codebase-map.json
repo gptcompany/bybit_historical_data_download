@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-03-05T19:45:53.518Z",
+  "projectRoot": "/media/sam/3TB-WDC/bybit_data_downloader",
+  "structure": {
+    "hasPackageJson": false,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1772739953518
+}

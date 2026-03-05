@@ -1,31 +1,251 @@
 {
   "testModules": [
     {
-      "moduleId": "test_historical_data_comprehensive.py",
+      "moduleId": "tests/test_backward_compatibility.py",
+      "tests": [
+        {
+          "name": "test_can_initialize_original_class",
+          "fullName": "tests/test_backward_compatibility.py::TestBackwardCompatibilityOpenInterest::test_can_initialize_original_class",
+          "state": "passed"
+        },
+        {
+          "name": "test_has_get_open_interest_method",
+          "fullName": "tests/test_backward_compatibility.py::TestBackwardCompatibilityOpenInterest::test_has_get_open_interest_method",
+          "state": "passed"
+        },
+        {
+          "name": "test_can_call_get_open_interest_with_real_api",
+          "fullName": "tests/test_backward_compatibility.py::TestBackwardCompatibilityOpenInterest::test_can_call_get_open_interest_with_real_api",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_bybit_open_interest.py",
+      "tests": [
+        {
+          "name": "test_open_interest_scenarios",
+          "fullName": "tests/test_bybit_open_interest.py::test_open_interest_scenarios",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_historical_data_comprehensive.py",
       "tests": [
         {
           "name": "test_date_utilities_work_correctly",
-          "fullName": "test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_date_utilities_work_correctly",
+          "fullName": "tests/test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_date_utilities_work_correctly",
           "state": "passed"
         },
         {
           "name": "test_unified_historical_2021_btc_7days_open_interest",
-          "fullName": "test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2021_btc_7days_open_interest",
+          "fullName": "tests/test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2021_btc_7days_open_interest",
           "state": "passed"
         },
         {
           "name": "test_unified_historical_2022_eth_7days_all_data_types",
-          "fullName": "test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2022_eth_7days_all_data_types",
+          "fullName": "tests/test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2022_eth_7days_all_data_types",
           "state": "passed"
         },
         {
           "name": "test_unified_historical_2023_multi_symbol_7days",
-          "fullName": "test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2023_multi_symbol_7days",
+          "fullName": "tests/test_historical_data_comprehensive.py::TestHistoricalDataComprehensive::test_unified_historical_2023_multi_symbol_7days",
           "state": "passed"
         },
         {
           "name": "test_wrapper_vs_unified_performance_historical_2023",
-          "fullName": "test_historical_data_comprehensive.py::TestPerformanceComparison::test_wrapper_vs_unified_performance_historical_2023",
+          "fullName": "tests/test_historical_data_comprehensive.py::TestPerformanceComparison::test_wrapper_vs_unified_performance_historical_2023",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_input_validation.py",
+      "tests": [
+        {
+          "name": "test_open_interest_validates_symbol",
+          "fullName": "tests/test_input_validation.py::test_open_interest_validates_symbol",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_klines.py",
+      "tests": [
+        {
+          "name": "test_download_range_api_failure",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_download_range_api_failure",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_range_no_data",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_download_range_no_data",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_range_save_exception",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_download_range_save_exception",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_range_skip_existing",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_download_range_skip_existing",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_range_success",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_download_range_success",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_interval_ms",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_get_interval_ms",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_klines_api_error",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_get_klines_api_error",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_klines_mock_success",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_get_klines_mock_success",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_klines_network_error",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_get_klines_network_error",
+          "state": "passed"
+        },
+        {
+          "name": "test_interval_mapping",
+          "fullName": "tests/test_klines.py::TestByBitKlineDownloader::test_interval_mapping",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_funding_rates_cli",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_funding_rates_cli",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_historical_data_klines",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_historical_data_klines",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_historical_data_trade",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_historical_data_trade",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_implied_volatility_cli",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_implied_volatility_cli",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_long_short_ratio_cli",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_long_short_ratio_cli",
+          "state": "passed"
+        },
+        {
+          "name": "test_download_open_interest_cli",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_download_open_interest_cli",
+          "state": "passed"
+        },
+        {
+          "name": "test_generate_report",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_generate_report",
+          "state": "passed"
+        },
+        {
+          "name": "test_invalid_interval_validation",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_invalid_interval_validation",
+          "state": "passed"
+        },
+        {
+          "name": "test_main_klines_interval_validation_failure",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_main_klines_interval_validation_failure",
+          "state": "passed"
+        },
+        {
+          "name": "test_main_utility_flags",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_main_utility_flags",
+          "state": "passed"
+        },
+        {
+          "name": "test_state_key_includes_interval",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_state_key_includes_interval",
+          "state": "passed"
+        },
+        {
+          "name": "test_state_management",
+          "fullName": "tests/test_klines.py::TestBybitUnifiedCLI_Klines::test_state_management",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_retry_logic.py",
+      "tests": [
+        {
+          "name": "test_open_interest_retry_on_network_failure",
+          "fullName": "tests/test_retry_logic.py::test_open_interest_retry_on_network_failure",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "tests/test_unified_downloader.py",
+      "tests": [
+        {
+          "name": "test_open_interest_initialization",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderInit::test_open_interest_initialization",
+          "state": "passed"
+        },
+        {
+          "name": "test_invalid_data_type_raises_error",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderInit::test_invalid_data_type_raises_error",
+          "state": "passed"
+        },
+        {
+          "name": "test_all_supported_types_can_be_initialized",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderInit::test_all_supported_types_can_be_initialized",
+          "state": "passed"
+        },
+        {
+          "name": "test_endpoint_configuration_exists_for_open_interest",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderInit::test_endpoint_configuration_exists_for_open_interest",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_data_method_exists",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderGetData::test_get_data_method_exists",
+          "state": "passed"
+        },
+        {
+          "name": "test_get_data_accepts_symbol_parameter",
+          "fullName": "tests/test_unified_downloader.py::TestByBitUnifiedDownloaderGetData::test_get_data_accepts_symbol_parameter",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "trash/test_openinterest_bug.py",
+      "tests": [
+        {
+          "name": "test_open_interest_bug_reproduction",
+          "fullName": "trash/test_openinterest_bug.py::TestOpenInterestBugReproduction::test_open_interest_bug_reproduction",
+          "state": "passed"
+        }
+      ]
+    },
+    {
+      "moduleId": "trash/test_openinterest_fix.py",
+      "tests": [
+        {
+          "name": "test_open_interest_download_success",
+          "fullName": "trash/test_openinterest_fix.py::TestOpenInterestFix::test_open_interest_download_success",
           "state": "passed"
         }
       ]

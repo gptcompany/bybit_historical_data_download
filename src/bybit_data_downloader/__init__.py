@@ -9,8 +9,9 @@ from .live.ByBitOpenInterestDownloader import ByBitOpenInterestDownloader
 from .live.ByBitLongShortRatioDownloader import ByBitLongShortRatioDownloader
 from .live.ByBitImpliedVolatilityDownloader import ByBitImpliedVolatilityDownloader
 from .live.ByBitFundingRateDownloader import ByBitFundingRateDownloader
+from .live.ByBitKlineDownloader import ByBitKlineDownloader
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "AdityaLakkad"
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "ByBitLongShortRatioDownloader",
     "ByBitImpliedVolatilityDownloader",
     "ByBitFundingRateDownloader",
+    "ByBitKlineDownloader",
 ]

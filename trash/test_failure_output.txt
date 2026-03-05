@@ -1,0 +1,147 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /media/sam/2TB-NVMe/bybit_data_downloader
+plugins: anyio-4.10.0, tdd-guard-pytest-0.1.2
+collecting ... collected 1 item
+
+test_openinterest_fix.py::TestOpenInterestFix::test_open_interest_download_success FAILED [100%]
+
+=================================== FAILURES ===================================
+___________ TestOpenInterestFix.test_open_interest_download_success ____________
+
+self = <test_openinterest_fix.TestOpenInterestFix testMethod=test_open_interest_download_success>
+
+    def test_open_interest_download_success(self):
+        """
+        Test that download_open_interest works correctly when get_historical_open_interest
+        returns a list of data points (which is the correct behavior).
+    
+        This test should FAIL with current buggy code and PASS after fix.
+        """
+        # Mock historical data as returned by get_historical_open_interest()
+        # This is a LIST of data points, not a dict with 'result' structure
+        mock_historical_data = [
+            {'openInterest': '66485.49000000', 'timestamp': '1758758400000'},
+            {'openInterest': '67132.06800000', 'timestamp': '1758672000000'},
+            {'openInterest': '66382.56400000', 'timestamp': '1758585600000'}
+        ]
+    
+        # Mock the ByBitOpenInterestDownloader
+        with patch('bybit_unified_cli.ByBitOpenInterestDownloader') as mock_downloader_class:
+            mock_downloader = Mock()
+            mock_downloader_class.return_value = mock_downloader
+    
+            # Mock current OI response (API format)
+            mock_current_oi = {
+                'result': {
+                    'list': [{'openInterest': '66485.49000000', 'timestamp': '1758758400000'}]
+                }
+            }
+            mock_downloader.get_open_interest.return_value = mock_current_oi
+    
+            # Mock historical data response (LIST format as returned by get_historical_data)
+            mock_downloader.get_historical_open_interest.return_value = mock_historical_data
+    
+            # This should work without errors after the fix
+            try:
+>               result = self.cli.download_open_interest('BTCUSDT', 7, 'test_key')
+
+test_openinterest_fix.py:68: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <bybit_unified_cli.BybitUnifiedCLI object at 0x76fdf2b83880>
+symbol = 'BTCUSDT', days_back = 7, state_key = 'test_key'
+
+    def download_open_interest(self, symbol: str, days_back: int, state_key: str) -> Dict:
+        """Download open interest data."""
+        output_dir = self.DIRECTORIES['open_interest']
+        filename = f"{symbol}_openinterest_{days_back}d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        file_path = os.path.join(output_dir, filename)
+    
+        if self.is_download_complete(state_key, file_path):
+            return {"status": "already_completed", "file": file_path}
+    
+        self.logger.info(f"📊 Downloading open interest: {symbol} ({days_back} days)")
+    
+        downloader = ByBitOpenInterestDownloader(timeout=30)
+    
+        # Get current OI
+        current_oi = downloader.get_open_interest(symbol, 'linear')
+        if current_oi.get('result', {}).get('list'):
+            oi_value = current_oi['result']['list'][0].get('openInterest', 'N/A')
+            self.logger.info(f"📊 Current {symbol} open interest: {oi_value}")
+    
+        # Get historical data
+        historical_data = downloader.get_historical_open_interest(
+            symbol=symbol,
+            category='linear',
+            interval_time='1d',
+            days_back=days_back
+        )
+    
+        # Save to file
+        with open(file_path, 'w') as f:
+            json.dump(historical_data, f, indent=2)
+    
+        # Mark as complete
+        if os.path.exists(file_path):
+>           records_count = len(historical_data.get('result', {}).get('list', []))
+E           AttributeError: 'list' object has no attribute 'get'
+
+bybit_unified_cli.py:430: AttributeError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_openinterest_fix.TestOpenInterestFix testMethod=test_open_interest_download_success>
+
+    def test_open_interest_download_success(self):
+        """
+        Test that download_open_interest works correctly when get_historical_open_interest
+        returns a list of data points (which is the correct behavior).
+    
+        This test should FAIL with current buggy code and PASS after fix.
+        """
+        # Mock historical data as returned by get_historical_open_interest()
+        # This is a LIST of data points, not a dict with 'result' structure
+        mock_historical_data = [
+            {'openInterest': '66485.49000000', 'timestamp': '1758758400000'},
+            {'openInterest': '67132.06800000', 'timestamp': '1758672000000'},
+            {'openInterest': '66382.56400000', 'timestamp': '1758585600000'}
+        ]
+    
+        # Mock the ByBitOpenInterestDownloader
+        with patch('bybit_unified_cli.ByBitOpenInterestDownloader') as mock_downloader_class:
+            mock_downloader = Mock()
+            mock_downloader_class.return_value = mock_downloader
+    
+            # Mock current OI response (API format)
+            mock_current_oi = {
+                'result': {
+                    'list': [{'openInterest': '66485.49000000', 'timestamp': '1758758400000'}]
+                }
+            }
+            mock_downloader.get_open_interest.return_value = mock_current_oi
+    
+            # Mock historical data response (LIST format as returned by get_historical_data)
+            mock_downloader.get_historical_open_interest.return_value = mock_historical_data
+    
+            # This should work without errors after the fix
+            try:
+                result = self.cli.download_open_interest('BTCUSDT', 7, 'test_key')
+    
+                # Verify the download was successful
+                self.assertIsNotNone(result)
+                self.assertEqual(result['status'], 'completed')
+                self.assertEqual(result['stats']['total_records'], 3)  # Should count the 3 records in the list
+    
+                print(f"✅ Open interest download worked successfully: {result['stats']}")
+    
+            except Exception as e:
+>               self.fail(f"Open interest download should not fail after fix, but got: {e}")
+E               AssertionError: Open interest download should not fail after fix, but got: 'list' object has no attribute 'get'
+
+test_openinterest_fix.py:78: AssertionError
+=========================== short test summary info ============================
+FAILED test_openinterest_fix.py::TestOpenInterestFix::test_open_interest_download_success
+============================== 1 failed in 0.26s ===============================

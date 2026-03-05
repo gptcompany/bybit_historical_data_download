@@ -1,0 +1,21 @@
+[Unit]
+Description=Bybit Data Sync Service (Docker)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=sam
+Group=sam
+WorkingDirectory=/media/sam/3TB-WDC/bybit_data_downloader
+Environment=COMPOSE_PROJECT_NAME=bybit-sync
+ExecStart=/usr/bin/docker compose -f /media/sam/3TB-WDC/bybit_data_downloader/docker-compose.yml run --rm bybit-sync
+TimeoutStartSec=7200
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bybit-sync-docker
+
+[Install]
+WantedBy=multi-user.target

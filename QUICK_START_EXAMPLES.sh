@@ -32,6 +32,16 @@ echo "python bybit_unified_cli.py --symbols BTCUSDT --data-types trade --market 
 python bybit_unified_cli.py --symbols BTCUSDT --data-types trade --market contract --start-date 2020-05-01 --end-date 2020-05-03
 
 echo ""
+echo "Press Enter to continue with historical klines download..."
+read
+
+# Kline data test
+echo ""
+echo "📈 4. Download BTCUSDT klines (1h, 5 days):"
+echo "python bybit_unified_cli.py --symbols BTCUSDT --data-types klines --market linear --interval 1h --start-date 2024-01-01 --end-date 2024-01-05"
+python bybit_unified_cli.py --symbols BTCUSDT --data-types klines --market linear --interval 1h --start-date 2024-01-01 --end-date 2024-01-05
+
+echo ""
 echo "Press Enter to test resume capability..."
 read
 

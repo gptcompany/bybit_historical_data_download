@@ -5,6 +5,8 @@ Basato sulla documentazione ufficiale: https://bybit-exchange.github.io/docs/v5/
 
 import requests
 import json
+import os
+import pytest
 from datetime import datetime, timedelta
 import time
 
@@ -66,6 +68,7 @@ def get_bybit_open_interest(symbol: str = "BTCUSDT",
         print(f"❌ JSON Decode Error: {e}")
         return None
 
+@pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') == 'true', reason="Bybit blocks GitHub Actions IPs")
 def test_open_interest_scenarios():
     """Test diversi scenari per l'open interest"""
 

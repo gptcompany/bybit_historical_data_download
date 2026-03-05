@@ -35,11 +35,21 @@ data/
 ## 🔧 Installation & Setup
 
 ```bash
-cd /media/sam/1TB1/bybit_data_downloader
+cd /media/sam/3TB-WDC/bybit_data_downloader
 pip install -r requirements.txt
 
 # Make executable
 chmod +x bybit_unified_cli.py
+```
+
+### Docker Setup (Production)
+
+```bash
+# Build container image
+docker compose build bybit-sync
+
+# Run one sync execution in container
+docker compose run --rm bybit-sync
 ```
 
 ## 🎯 Usage Examples

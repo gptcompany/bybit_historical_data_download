@@ -7,6 +7,7 @@ across multiple periods (2021-2023) to validate robustness and data quality.
 
 import pytest
 import time
+import os
 from datetime import datetime, timezone
 from typing import Dict, List
 from bybit_data_downloader.live.ByBitUnifiedDownloader import ByBitUnifiedDownloader
@@ -120,6 +121,7 @@ class TestHistoricalDataComprehensive:
         assert callable(utils.validate_timestamp_range)
         assert callable(utils.validate_data_completeness)
 
+    @pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') == 'true', reason="Bybit blocks GitHub Actions IPs")
     def test_unified_historical_2021_btc_7days_open_interest(self):
         """Test unified downloader with BTC historical data from 2021 bull market."""
         utils = HistoricalTestUtils()
@@ -177,6 +179,7 @@ class TestHistoricalDataComprehensive:
                 # Unexpected error - fail the test
                 assert False, f"Unexpected API error: {error_msg}"
 
+    @pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') == 'true', reason="Bybit blocks GitHub Actions IPs")
     def test_unified_historical_2022_eth_7days_all_data_types(self):
         """Test unified downloader with ETH historical data from 2022 bear market - all data types."""
         utils = HistoricalTestUtils()
@@ -290,6 +293,7 @@ class TestHistoricalDataComprehensive:
             # This might be expected for some historical periods
             pytest.skip("No historical data available for 2022 bear market period")
 
+    @pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') == 'true', reason="Bybit blocks GitHub Actions IPs")
     def test_unified_historical_2023_multi_symbol_7days(self):
         """Test unified downloader with multiple symbols from 2023 recovery period."""
         utils = HistoricalTestUtils()
@@ -412,6 +416,7 @@ class TestHistoricalDataComprehensive:
 class TestPerformanceComparison:
     """Compare performance between unified downloader and wrapper classes."""
 
+    @pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') == 'true', reason="Bybit blocks GitHub Actions IPs")
     def test_wrapper_vs_unified_performance_historical_2023(self):
         """Compare performance of wrapper vs unified downloader with 2023 historical data."""
         utils = HistoricalTestUtils()

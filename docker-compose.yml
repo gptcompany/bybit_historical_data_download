@@ -1,0 +1,18 @@
+services:
+  bybit-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bybit-data-downloader:latest
+    container_name: bybit-sync
+    working_dir: /app
+    environment:
+      TZ: ${TZ:-Europe/Lisbon}
+      START_DATE: ${START_DATE:-2020-05-01}
+      DAYS_BACK: ${DAYS_BACK:-365}
+      SYMBOLS: ${SYMBOLS:-BTCUSDT,ETHUSDT}
+      PYTHON: ${PYTHON:-python3}
+    volumes:
+      - ./data:/app/data
+    command: ["bash", "scripts/run-sync.sh"]
+    restart: "no"

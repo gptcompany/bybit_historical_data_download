@@ -6,6 +6,7 @@ being converted to thin wrappers around the unified downloader.
 """
 
 import pytest
+from unittest.mock import Mock, patch
 from bybit_data_downloader.live.ByBitOpenInterestDownloader import ByBitOpenInterestDownloader
 
 
@@ -23,11 +24,18 @@ class TestBackwardCompatibilityOpenInterest:
         assert hasattr(downloader, 'get_open_interest')
         assert callable(getattr(downloader, 'get_open_interest'))
 
-    def test_can_call_get_open_interest_with_real_api(self):
-        """Test that get_open_interest method works with real API call."""
+    @patch('httpx.Client.get')
+    def test_can_call_get_open_interest_with_real_api(self, mock_get):
+        """Test that get_open_interest method works with mocked API call."""
+        # Mock API response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"retCode": 0, "retMsg": "OK", "result": {"list": []}}
+        mock_get.return_value = mock_response
+
         downloader = ByBitOpenInterestDownloader()
 
-        # Make a real API call with proper parameters
+        # Make a call with proper parameters
         result = downloader.get_open_interest(
             symbol='BTCUSDT',
             category='linear',
@@ -38,8 +46,7 @@ class TestBackwardCompatibilityOpenInterest:
         # Should return a dictionary with Bybit API response structure
         assert isinstance(result, dict)
         assert 'retCode' in result
-        # Should have either successful data or clear error message
-        assert result.get('retCode') is not None
+        assert mock_get.called
 
 
 if __name__ == "__main__":

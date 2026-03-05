@@ -33,7 +33,8 @@ try:
         ByBitFundingRateDownloader,
         ByBitOpenInterestDownloader,
         ByBitLongShortRatioDownloader,
-        ByBitImpliedVolatilityDownloader
+        ByBitImpliedVolatilityDownloader,
+        ByBitKlineDownloader
     )
 except ImportError as e:
     print(f"❌ Import error: {e}")
@@ -44,7 +45,8 @@ except ImportError as e:
         ByBitFundingRateDownloader,
         ByBitOpenInterestDownloader,
         ByBitLongShortRatioDownloader,
-        ByBitImpliedVolatilityDownloader
+        ByBitImpliedVolatilityDownloader,
+        ByBitKlineDownloader
     )
 
 class BybitUnifiedCLI:
@@ -62,6 +64,7 @@ class BybitUnifiedCLI:
         'trade_contract': 'data/historical/trade/contract',
         'orderbook_spot': 'data/historical/orderbook/spot',
         'orderbook_contract': 'data/historical/orderbook/contract',
+        'klines': 'data/historical/klines',
         'funding_rates': 'data/market_metrics/funding_rates',
         'open_interest': 'data/market_metrics/open_interest',
         'long_short_ratio': 'data/market_metrics/long_short_ratio',
@@ -69,13 +72,16 @@ class BybitUnifiedCLI:
     }
 
     # Supported data types
-    HISTORICAL_DATA_TYPES = ['trade', 'orderbook']
+    HISTORICAL_DATA_TYPES = ['trade', 'orderbook', 'klines']
     MARKET_DATA_TYPES = ['funding', 'openinterest', 'longshortratio', 'impliedvolatility']
     ALL_DATA_TYPES = HISTORICAL_DATA_TYPES + MARKET_DATA_TYPES
     MARKET_TYPES = ['spot', 'contract', 'linear', 'inverse', 'option']
 
+    VALID_INTERVALS = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w', '1mo']
+
     def __init__(self):
         """Initialize CLI with logging and directory setup."""
+        self.logger = logging.getLogger(__name__) # Default logger
         self.setup_directories()
         self.setup_logging()
         self.state_file = os.path.join(self.DIRECTORIES['state'], 'download_state.json')
@@ -193,17 +199,23 @@ class BybitUnifiedCLI:
 
     def download_historical_data(self, symbols: List[str], data_types: List[str],
                                 market: str, start_date: str, end_date: str,
-                                parallel: int = 5, timeout: int = 60) -> Dict:
-        """Download historical trade/orderbook data."""
+                                parallel: int = 5, timeout: int = 60,
+                                interval: str = '1m') -> Dict:
+        """Download historical trade/orderbook/klines data."""
 
         self.logger.info(f"🚀 Starting historical data download")
         self.logger.info(f"📊 Symbols: {symbols}")
         self.logger.info(f"📈 Data types: {data_types}")
         self.logger.info(f"🏪 Market: {market}")
         self.logger.info(f"📅 Date range: {start_date} to {end_date}")
+        if 'klines' in data_types:
+            self.logger.info(f"⏱️  Interval: {interval}")
 
-        downloader = ByBitHistoricalDataDownloader(parallel_downloads=parallel, timeout=timeout)
         results = {}
+
+        # Initialize downloaders
+        historical_downloader = ByBitHistoricalDataDownloader(parallel_downloads=parallel, timeout=timeout)
+        kline_downloader = ByBitKlineDownloader(timeout=timeout)
 
         for symbol in symbols:
             for data_type in data_types:
@@ -211,6 +223,48 @@ class BybitUnifiedCLI:
                     self.logger.warning(f"❌ Invalid historical data type: {data_type}")
                     continue
 
+                if data_type == 'klines':
+                    # For klines, 'contract' maps to 'linear'
+                    kline_market = 'linear' if market == 'contract' else market
+                    
+                    # Create state key including interval
+                    state_key = f"historical_{symbol}_klines_{kline_market}_{interval}_{start_date}_{end_date}"
+                    
+                    try:
+                        self.logger.info(f"⬇️  Downloading {symbol} klines ({kline_market}) - {interval} from {start_date} to {end_date}")
+                        
+                        stats = kline_downloader.download_range(
+                            symbol=symbol,
+                            start_date=start_date,
+                            end_date=end_date,
+                            interval=interval,
+                            category=kline_market,
+                            output_dir=self.DIRECTORIES['klines']
+                        )
+                        
+                        # Note: download_range already handles daily idempotency
+                        # but we mark the overall task as complete in state
+                        if stats.get('successful_days', 0) > 0:
+                            self.mark_download_complete(state_key, "N/A", {
+                                'symbol': symbol,
+                                'data_type': 'klines',
+                                'market': kline_market,
+                                'interval': interval,
+                                'date_range': f"{start_date}_to_{end_date}",
+                                'stats': stats
+                            })
+                            
+                        results[f"{symbol}_klines_{interval}_{kline_market}"] = {"status": "completed", "stats": stats}
+                        self.logger.info(f"✅ Completed: {symbol} klines {interval} - {stats}")
+                        
+                    except Exception as e:
+                        error_msg = f"❌ Failed to download {symbol} klines: {e}"
+                        self.logger.error(error_msg)
+                        results[f"{symbol}_klines_{interval}_{kline_market}"] = {"status": "failed", "error": str(e)}
+                    
+                    continue
+
+                # Original logic for trade/orderbook
                 # Determine output directory based on data type and market
                 if data_type == 'trade':
                     if market == 'spot':
@@ -234,7 +288,7 @@ class BybitUnifiedCLI:
                 all_complete = all(self.is_download_complete(f"{state_key}_{os.path.basename(f)}", f)
                                  for f in expected_files)
 
-                if all_complete:
+                if all_complete and expected_files:
                     self.logger.info(f"✅ Historical data already complete: {symbol} {data_type} {market}")
                     results[f"{symbol}_{data_type}_{market}"] = {"status": "already_completed", "files": len(expected_files)}
                     continue
@@ -243,7 +297,7 @@ class BybitUnifiedCLI:
                 try:
                     self.logger.info(f"⬇️  Downloading {symbol} {data_type} ({market}) from {start_date} to {end_date}")
 
-                    stats = downloader.download_data(
+                    stats = historical_downloader.download_data(
                         symbol=symbol,
                         start_date=start_date,
                         end_date=end_date,
@@ -427,7 +481,7 @@ class BybitUnifiedCLI:
 
         # Mark as complete
         if os.path.exists(file_path):
-            records_count = len(historical_data.get('result', {}).get('list', []))
+            records_count = len(historical_data) if isinstance(historical_data, list) else 0
             file_size = os.path.getsize(file_path) / 1024  # KB
 
             self.mark_download_complete(state_key, file_path, {
@@ -595,6 +649,13 @@ Historical Data:
   # Download spot data
   python bybit_unified_cli.py --symbols BTCUSDT --data-types trade --market spot --start-date 2022-12-01 --end-date 2022-12-07
 
+Klines Data:
+  # Download 1m klines for BTCUSDT (linear contracts)
+  python bybit_unified_cli.py --symbols BTCUSDT --data-types klines --market linear --interval 1m --start-date 2024-01-01 --end-date 2024-01-05
+
+  # Download multiple intervals
+  python bybit_unified_cli.py --symbols BTCUSDT --data-types klines --interval 1h --start-date 2024-01-01 --end-date 2024-01-31
+
 Market Data:
   # Download funding rates (365 days)
   python bybit_unified_cli.py --symbols BTCUSDT --data-types funding --days-back 365
@@ -612,7 +673,8 @@ DIRECTORY STRUCTURE:
   │   ├── trade/spot/{SYMBOL}/
   │   ├── trade/contract/{SYMBOL}/
   │   ├── orderbook/spot/{SYMBOL}/
-  │   └── orderbook/contract/{SYMBOL}/
+  │   ├── orderbook/contract/{SYMBOL}/
+  │   └── klines/{MARKET}/{SYMBOL}/{INTERVAL}/
   ├── market_metrics/
   │   ├── funding_rates/
   │   ├── open_interest/
@@ -651,6 +713,8 @@ PERFORMANCE:
                        default='contract', help='Market type for historical data (default: contract)')
     parser.add_argument('--start-date', help='Start date for historical data (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='End date for historical data (YYYY-MM-DD)')
+    parser.add_argument('--interval', default='1m', 
+                       help='Kline interval (1m, 5m, 1h, 1d, etc. Default: 1m)')
 
     # Market data arguments
     parser.add_argument('--days-back', type=int, default=30,
@@ -730,6 +794,12 @@ def main():
 
     # Download historical data
     if historical_types:
+        # Validate interval if klines are requested
+        if 'klines' in historical_types and args.interval not in cli.VALID_INTERVALS:
+            cli.logger.error(f"❌ Invalid interval: {args.interval}")
+            cli.logger.error(f"Valid intervals: {cli.VALID_INTERVALS}")
+            sys.exit(1)
+
         cli.logger.info(f"\n📈 Starting historical data downloads...")
         historical_results = cli.download_historical_data(
             symbols=symbols,
@@ -738,7 +808,8 @@ def main():
             start_date=args.start_date,
             end_date=args.end_date,
             parallel=args.parallel,
-            timeout=args.timeout
+            timeout=args.timeout,
+            interval=args.interval
         )
         all_results.update(historical_results)
 

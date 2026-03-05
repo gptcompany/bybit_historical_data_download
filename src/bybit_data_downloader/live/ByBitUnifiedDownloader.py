@@ -77,7 +77,7 @@ class ByBitUnifiedDownloader:
         params = {"limit": limit}
 
         # Add symbol/category or base_coin/quote_coin based on endpoint
-        if config['supports_symbol'] and symbol:
+        if config['supports_symbol']:
             self._validate_symbol(symbol)
             params["symbol"] = symbol.upper()
 
