@@ -1,10 +1,10 @@
 # Bybit Data Downloader & Unified CLI
 
-![CI](https://github.com/gptprojectmanager/bybit_historical_data_download/actions/workflows/ci.yml/badge.svg?branch=main)
+![CI](https://github.com/gptcompany/bybit_historical_data_download/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
-![License](https://img.shields.io/github/license/gptprojectmanager/bybit_historical_data_download?style=flat-square)
-![Last Commit](https://img.shields.io/github/last-commit/gptprojectmanager/bybit_historical_data_download?style=flat-square)
-![Issues](https://img.shields.io/github/issues/gptprojectmanager/bybit_historical_data_download?style=flat-square)
+![License](https://img.shields.io/github/license/gptcompany/bybit_historical_data_download?style=flat-square)
+![Last Commit](https://img.shields.io/github/last-commit/gptcompany/bybit_historical_data_download?style=flat-square)
+![Issues](https://img.shields.io/github/issues/gptcompany/bybit_historical_data_download?style=flat-square)
 
 A high-performance Python package and **complete CLI solution** for downloading historical data from Bybit exchange with comprehensive market metrics support and resume capability.
 
