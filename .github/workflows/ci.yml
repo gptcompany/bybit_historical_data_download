@@ -22,6 +22,9 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -48,9 +51,19 @@ jobs:
           PYTHONPATH=src:. pytest tests/ -v \
             --cov=src/bybit_data_downloader \
             --cov-report=term \
-            --cov-report=json
+            --cov-report=json \
+            --cov-report=xml:coverage.xml
           TOTAL=$(python -c "import json; print(int(json.load(open('coverage.json'))['totals']['percent_covered_display']))")
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: ./coverage.xml
+          fail_ci_if_error: true
+          verbose: true
 
       - name: Upload coverage badge
         if: matrix.os == 'ubuntu-latest' && github.ref == 'refs/heads/main'
