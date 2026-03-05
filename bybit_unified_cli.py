@@ -197,6 +197,32 @@ class BybitUnifiedCLI:
         }
         self.save_state()
 
+    def clean_all_data(self):
+        """Delete all downloaded data and reset state."""
+        import shutil
+        
+        self.logger.info("🗑️  Cleaning all downloaded data and state...")
+        
+        dirs_to_clean = [
+            self.DIRECTORIES['historical'],
+            self.DIRECTORIES['market_metrics']
+        ]
+        
+        for d in dirs_to_clean:
+            if os.path.exists(d):
+                self.logger.info(f"🗑️  Cleaning directory: {d}")
+                shutil.rmtree(d)
+        
+        if os.path.exists(self.state_file):
+            self.logger.info(f"🗑️  Removing state file: {self.state_file}")
+            os.remove(self.state_file)
+        
+        # Recreate directory structure
+        self.setup_directories()
+        self.load_state()
+        
+        self.logger.info("✅ Cleanup completed successfully!")
+
     def download_historical_data(self, symbols: List[str], data_types: List[str],
                                 market: str, start_date: str, end_date: str,
                                 parallel: int = 5, timeout: int = 60,
@@ -735,6 +761,8 @@ PERFORMANCE:
                        help='Show directory structure and exit')
     parser.add_argument('--clear-state', action='store_true',
                        help='Clear download state (force re-download)')
+    parser.add_argument('--clean-data', action='store_true',
+                       help='Delete all downloaded data and clear state')
 
     return parser.parse_args()
 
@@ -762,6 +790,10 @@ def main():
             os.remove(cli.state_file)
             cli.logger.info("🗑️  Cleared download state - all files will be re-downloaded")
             cli.load_state()  # Reload empty state
+
+    if args.clean_data:
+        cli.clean_all_data()
+        return
 
     # Check required arguments for actual downloads
     if not args.symbols or not args.data_types:
