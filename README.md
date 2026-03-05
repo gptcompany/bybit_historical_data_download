@@ -278,18 +278,23 @@ file_path = fr_downloader.download_and_save(
 - **docs/HISTORICAL_DATA_AVAILABILITY.md**: Data availability analysis
 - **docs/OPEN_INTEREST_DATA_SOURCES.md**: Market data sources guide
 
-## 🧪 Testing
+## 🧪 Testing & CI/CD
 
+### Local Testing
 ```bash
 # Run Python library tests
 python -m pytest tests/ -v
 
-# Run CLI quick tests
-./QUICK_START_EXAMPLES.sh
-
-# Test specific functionality
-python tests/test_historical_data_comprehensive.py
+# Run tests with coverage
+PYTHONPATH=src:. pytest tests/ -v --cov=src/bybit_data_downloader --cov-report=term --cov-report=xml:coverage.xml
 ```
+
+### CI/CD Pipeline
+This project uses **GitHub Actions** for automated testing and **Codecov** for coverage reporting.
+
+- **Automated Tests**: Runs on every push and pull request to `main`.
+- **Security**: Coverage reports are uploaded to Codecov using **OIDC (OpenID Connect)**, eliminating the need for sensitive upload tokens in the repository.
+- **Badge Support**: Coverage percentage is dynamically updated via GitHub Actions.
 
 ## 🎯 Use Cases
 
