@@ -1,5 +1,11 @@
 # Bybit Data Downloader & Unified CLI
 
+![CI](https://github.com/gptprojectmanager/bybit_historical_data_download/actions/workflows/ci.yml/badge.svg?branch=main)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python)
+![License](https://img.shields.io/github/license/gptprojectmanager/bybit_historical_data_download?style=flat-square)
+![Last Commit](https://img.shields.io/github/last-commit/gptprojectmanager/bybit_historical_data_download?style=flat-square)
+![Issues](https://img.shields.io/github/issues/gptprojectmanager/bybit_historical_data_download?style=flat-square)
+
 A high-performance Python package and **complete CLI solution** for downloading historical data from Bybit exchange with comprehensive market metrics support and resume capability.
 
 ## ✨ Key Features
@@ -21,12 +27,14 @@ bybit_data_downloader/
 │   │   ├── __init__.py                    # Package initialization
 │   │   ├── historical/                    # Historical data downloaders
 │   │   │   └── ByBitHistoricalDataDownloader.py
-│   │   └── live/                          # Real-time market metrics
-│   │       ├── ByBitOpenInterestDownloader.py
-│   │       ├── ByBitLongShortRatioDownloader.py
-│   │       ├── ByBitFundingRateDownloader.py
-│   │       └── ByBitImpliedVolatilityDownloader.py
-│   └── setup.py                           # Package setup
+├── live/                          # Real-time market metrics
+│       │       ├── ByBitOpenInterestDownloader.py
+│       │       ├── ByBitLongShortRatioDownloader.py
+│       │       ├── ByBitFundingRateDownloader.py
+│       │       ├── ByBitImpliedVolatilityDownloader.py
+│       │       └── ByBitKlineDownloader.py
+│       └── setup.py                           # Package setup
+
 ├── CLI Interface                          # NEW: Complete CLI solution
 │   ├── bybit_unified_cli.py               # Main CLI script
 │   ├── CLI_DOCUMENTATION.md               # Complete CLI documentation
@@ -35,6 +43,10 @@ bybit_data_downloader/
 ├── scripts/                               # Python API examples
 ├── docs/                                  # Documentation & analysis
 ├── requirements.txt                       # Dependencies
+├── Dockerfile                             # Container image for production sync
+├── docker-compose.yml                     # Container runtime definition
+├── .dockerignore                          # Docker build exclusions
+├── deploy/systemd/                        # Optional systemd units for Docker runs
 └── data/                                  # CLI download directory (auto-created)
     ├── historical/                        # Historical trade/orderbook data
     ├── market_metrics/                    # Market data (funding, OI, etc.)
@@ -53,10 +65,13 @@ data/
 │   ├── trade/
 │   │   ├── spot/{SYMBOL}/           # Spot trade data (CSV.gz)
 │   │   └── contract/{SYMBOL}/       # Contract trade data (CSV.gz)
-│   └── orderbook/
+└── orderbook/
 │       ├── spot/{SYMBOL}/           # Spot orderbook data (ZIP/JSON)
 │       └── contract/{SYMBOL}/       # Contract orderbook Level-500 (ZIP/JSON)
+│   └── klines/
+│       └── {MARKET}/{SYMBOL}/{INTERVAL}/ # Daily kline data (JSON)
 ├── market_metrics/
+
 │   ├── funding_rates/               # Funding rate historical data (JSON)
 │   ├── open_interest/               # Open interest data (JSON)
 │   ├── long_short_ratio/            # Long-short ratio sentiment (JSON)
@@ -72,6 +87,36 @@ data/
 ```bash
 cd bybit_data_downloader
 pip install -r requirements.txt
+```
+
+### Docker (Production)
+```bash
+# Optional: customize runtime parameters
+cp .env.example .env
+
+# Build image
+docker compose build bybit-sync
+
+# Run one sync job
+docker compose run --rm bybit-sync
+```
+
+#### Migrate Existing systemd Timer To Docker
+```bash
+# Install docker-based units from this repository
+sudo cp deploy/systemd/bybit-sync-docker.service /etc/systemd/system/
+sudo cp deploy/systemd/bybit-sync-docker.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Disable old host-python timer/service
+sudo systemctl disable --now bybit-sync.timer bybit-sync.service
+
+# Enable new docker timer
+sudo systemctl enable --now bybit-sync-docker.timer
+
+# Verify schedule and last run
+sudo systemctl status bybit-sync-docker.timer --no-pager
+sudo systemctl list-timers --all --no-pager | grep bybit-sync-docker
 ```
 
 ### CLI Usage Examples
@@ -107,6 +152,17 @@ python bybit_unified_cli.py \
   --end-date 2024-01-03
 ```
 
+**Download historical klines (OHLCV):**
+```bash
+python bybit_unified_cli.py \
+  --symbols BTCUSDT \
+  --data-types klines \
+  --market linear \
+  --interval 1m \
+  --start-date 2024-01-01 \
+  --end-date 2024-01-05
+```
+
 **Download mixed data types with resume capability:**
 ```bash
 python bybit_unified_cli.py \
@@ -127,6 +183,7 @@ python bybit_unified_cli.py \
 
 | Data Type | Markets | Earliest Available | File Format | CLI Flag |
 |-----------|---------|-------------------|-------------|----------|
+| **Klines (OHLCV)** | Spot, Linear, Inverse | Real-time + historical | JSON | `klines` |
 | **Trade Data** | Spot, Contract | 2020-05-01 (Contract), 2022-12-01 (Spot) | CSV.gz | `trade` |
 | **Orderbook** | Spot, Contract | 2024-01-01 (Contract) | ZIP/JSON | `orderbook` |
 | **Funding Rates** | Linear, Inverse | Real-time + ~3 years | JSON | `funding` |
