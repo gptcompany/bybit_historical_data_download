@@ -1,0 +1,37 @@
+name: Trigger Progressive Deploy
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/trigger-progressive-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to progressive-deploy
+        env:
+          TOKEN: ${{ secrets.PROGRESSIVE_DEPLOY_PAT }}
+          REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "PROGRESSIVE_DEPLOY_PAT missing; skipping dispatch" >&2
+            exit 1
+          fi
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: token ${TOKEN}" \
+            https://api.github.com/repos/gptcompany/progressive-deploy/dispatches \
+            -d "{\"event_type\":\"bybit-downloader-build\",\"client_payload\":{\"ref\":\"${REF}\",\"source_repo\":\"${GITHUB_REPOSITORY}\"}}"
