@@ -101,6 +101,10 @@ docker compose build bybit-sync
 docker compose run --rm bybit-sync
 ```
 
+Data persistence is controlled by `BYBIT_DATA_ROOT` (volume mount in `docker-compose.yml`).
+On this host, set `BYBIT_REPO_ROOT` and `BYBIT_DATA_ROOT` in `/etc/downloader-sync.env` and use the
+`deploy/systemd/bybit-sync-docker.service` unit, which reads those variables via `EnvironmentFile=`.
+
 #### Migrate Existing systemd Timer To Docker
 ```bash
 # Install docker-based units from this repository
@@ -117,6 +121,13 @@ sudo systemctl enable --now bybit-sync-docker.timer
 # Verify schedule and last run
 sudo systemctl status bybit-sync-docker.timer --no-pager
 sudo systemctl list-timers --all --no-pager | grep bybit-sync-docker
+```
+
+### Notifications
+Healthchecks pings are emitted by `cron-wrapper.sh` (monitoring-stack).
+Discord delivery is configured on the Healthchecks server. To (re)configure the webhook on this host, run:
+```bash
+dotenvx run -f /media/sam/1TB/.env -- /media/sam/1TB/monitoring-stack/scripts/configure-healthchecks-discord.sh
 ```
 
 ### CLI Usage Examples

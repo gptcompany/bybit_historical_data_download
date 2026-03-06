@@ -13,6 +13,6 @@ services:
       SYMBOLS: ${SYMBOLS:-BTCUSDT,ETHUSDT}
       PYTHON: ${PYTHON:-python3}
     volumes:
-      - ./data:/app/data
+      - ${BYBIT_DATA_ROOT:-/media/sam/3TB-WDC/bybit_data_downloader/data}:/app/data
     command: ["bash", "scripts/run-sync.sh"]
     restart: "no"
