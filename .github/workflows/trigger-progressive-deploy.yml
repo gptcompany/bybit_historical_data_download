@@ -2,7 +2,7 @@ name: Trigger Progressive Deploy
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "Dockerfile"
       - "docker-compose.yml"
