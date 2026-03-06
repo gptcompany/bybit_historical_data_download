@@ -17,7 +17,7 @@ COPY QUICK_START_EXAMPLES.sh /app/QUICK_START_EXAMPLES.sh
 COPY src /app/src
 COPY scripts /app/scripts
 
-RUN chmod +x /app/scripts/run-sync.sh /app/QUICK_START_EXAMPLES.sh && \
+RUN chmod +x /app/scripts/run-sync.sh /app/scripts/run-sync-with-notify.sh /app/QUICK_START_EXAMPLES.sh && \
     mkdir -p /app/data/historical /app/data/market_metrics /app/data/logs /app/data/state /app/data/reports
 
 RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app

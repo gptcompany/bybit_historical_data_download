@@ -105,6 +105,11 @@ Data persistence is controlled by `BYBIT_DATA_ROOT` (volume mount in `docker-com
 On this host, set `BYBIT_REPO_ROOT` and `BYBIT_DATA_ROOT` in `/etc/downloader-sync.env` and use the
 `deploy/systemd/bybit-sync-docker.service` unit, which reads those variables via `EnvironmentFile=`.
 
+### Docker-First Execution (CI)
+These services are intended to run **inside Docker** (CI actions launch Docker services, not systemd).
+The compose service runs `scripts/run-sync-with-notify.sh`, which captures the original run summary and
+sends it to Discord when `DISCORD_WEBHOOK_HISTORY` is set.
+
 #### Migrate Existing systemd Timer To Docker
 ```bash
 # Install docker-based units from this repository

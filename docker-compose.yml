@@ -14,5 +14,5 @@ services:
       PYTHON: ${PYTHON:-python3}
     volumes:
       - ${BYBIT_DATA_ROOT:-/media/sam/3TB-WDC/bybit_data_downloader/data}:/app/data
-    command: ["bash", "scripts/run-sync.sh"]
+    command: ["bash", "scripts/run-sync-with-notify.sh"]
     restart: "no"
