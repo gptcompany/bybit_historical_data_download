@@ -99,4 +99,3 @@ nautilus_data/
 download_earliest_data.py
 download_nautilus_data.py
 fix_funding_rates.py
-bybit_cli_downloader.py
