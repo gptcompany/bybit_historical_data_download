@@ -309,11 +309,28 @@ PYTHONPATH=src:. pytest tests/ -v --cov=src/bybit_data_downloader --cov-report=t
 ```
 
 ### CI/CD Pipeline
-This project uses **GitHub Actions** for automated testing and **Codecov** for coverage reporting.
+This project uses **GitHub Actions** for automated testing and deployment.
 
 - **Automated Tests**: Runs on every push and pull request to `main`.
-- **Security**: Coverage reports are uploaded to Codecov using **OIDC (OpenID Connect)**, eliminating the need for sensitive upload tokens in the repository.
-- **Badge Support**: Coverage percentage is dynamically updated via GitHub Actions.
+- **Coverage**: Reports uploaded to Codecov (OIDC auth).
+
+### Auto-Deploy Pipeline
+On push to `main` (when `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `uv.lock`, `src/**`, `scripts/**` change):
+
+1. **Trigger**: `trigger-progressive-deploy.yml` dispatches `bybit-downloader-build` to `progressive-deploy`
+2. **Build**: Progressive-deploy builds Docker image and pushes to `ghcr.io/gptcompany/bybit-downloader`
+3. **GitOps**: Image tag updated in `gitops/apps/bybit-downloader/base/kustomization.yaml`
+4. **Promotion**: Kargo promotes through dev → staging → prod
+
+**Required secret**: `PROGRESSIVE_DEPLOY_PAT` (GitHub classic PAT with `repo` scope)
+
+### Local Execution
+The service runs nightly via systemd timer (`bybit-sync-docker.timer` at 03:15):
+```bash
+docker compose run --rm bybit-sync
+```
+
+The systemd service uses `dotenvx` to load secrets from `/media/sam/1TB/.env` (SSOT) and `cron-wrapper.sh` from `monitoring-stack` for notifications. Runtime env vars are sourced from `/etc/downloader-sync.env` (contains `BYBIT_REPO_ROOT`).
 
 ## 🎯 Use Cases
 
