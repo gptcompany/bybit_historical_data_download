@@ -21,14 +21,14 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, X64, muletto]]
         python-version: ["3.10"]
 
     steps:
@@ -60,7 +60,7 @@ jobs:
         run: ls -la coverage.xml
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        if: runner.os == 'Linux' && github.event_name == 'push'
         uses: codecov/codecov-action@v5
         with:
           use_oidc: true
@@ -69,7 +69,7 @@ jobs:
           verbose: true
 
       - name: Upload coverage badge
-        if: matrix.os == 'ubuntu-latest' && github.ref == 'refs/heads/main'
+        if: runner.os == 'Linux' && github.ref == 'refs/heads/main'
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
