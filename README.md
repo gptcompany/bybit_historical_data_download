@@ -23,30 +23,19 @@ A high-performance Python package and **complete CLI solution** for downloading 
 ```
 bybit_data_downloader/
 ├── src/                                    # Core Python library
-│   ├── bybit_data_downloader/             # Main package
-│   │   ├── __init__.py                    # Package initialization
-│   │   ├── historical/                    # Historical data downloaders
-│   │   │   └── ByBitHistoricalDataDownloader.py
-├── live/                          # Real-time market metrics
-│       │       ├── ByBitOpenInterestDownloader.py
-│       │       ├── ByBitLongShortRatioDownloader.py
-│       │       ├── ByBitFundingRateDownloader.py
-│       │       ├── ByBitImpliedVolatilityDownloader.py
-│       │       └── ByBitKlineDownloader.py
-│       └── setup.py                           # Package setup
-
-├── CLI Interface                          # NEW: Complete CLI solution
-│   ├── bybit_unified_cli.py               # Main CLI script
-│   ├── CLI_DOCUMENTATION.md               # Complete CLI documentation
-│   └── QUICK_START_EXAMPLES.sh            # Automated test examples
+│   └── bybit_data_downloader/             # Main package
+│       ├── historical/                    # Historical data downloaders
+│       └── live/                          # Real-time market metrics
+├── bybit_unified_cli.py                   # Main CLI script (Complete solution)
+├── CLI_DOCUMENTATION.md                   # Complete CLI documentation
+├── QUICK_START_EXAMPLES.sh                # Automated test examples
 ├── tests/                                 # Test suite
 ├── scripts/                               # Python API examples
 ├── docs/                                  # Documentation & analysis
 ├── requirements.txt                       # Dependencies
 ├── Dockerfile                             # Container image for production sync
 ├── docker-compose.yml                     # Container runtime definition
-├── .dockerignore                          # Docker build exclusions
-├── deploy/systemd/                        # Optional systemd units for Docker runs
+├── deploy/systemd/                        # systemd units for Docker runs
 └── data/                                  # CLI download directory (auto-created)
     ├── historical/                        # Historical trade/orderbook data
     ├── market_metrics/                    # Market data (funding, OI, etc.)
@@ -65,13 +54,10 @@ data/
 │   ├── trade/
 │   │   ├── spot/{SYMBOL}/           # Spot trade data (CSV.gz)
 │   │   └── contract/{SYMBOL}/       # Contract trade data (CSV.gz)
-└── orderbook/
+│   └── orderbook/
 │       ├── spot/{SYMBOL}/           # Spot orderbook data (ZIP/JSON)
 │       └── contract/{SYMBOL}/       # Contract orderbook Level-500 (ZIP/JSON)
-│   └── klines/
-│       └── {MARKET}/{SYMBOL}/{INTERVAL}/ # Daily kline data (JSON)
 ├── market_metrics/
-
 │   ├── funding_rates/               # Funding rate historical data (JSON)
 │   ├── open_interest/               # Open interest data (JSON)
 │   ├── long_short_ratio/            # Long-short ratio sentiment (JSON)
@@ -315,7 +301,7 @@ This project uses **GitHub Actions** for automated testing and deployment.
 - **Coverage**: Reports uploaded to Codecov (OIDC auth).
 
 ### Auto-Deploy Pipeline
-On push to `main` (when `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `uv.lock`, `src/**`, `scripts/**` change):
+On push to `main` (when `Dockerfile`, `docker-compose.yml`, `src/**`, `scripts/**` change):
 
 1. **Trigger**: `trigger-progressive-deploy.yml` dispatches `bybit-downloader-build` to `progressive-deploy`
 2. **Build**: Progressive-deploy builds Docker image and pushes to `ghcr.io/gptcompany/bybit-downloader`
