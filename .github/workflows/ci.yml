@@ -21,14 +21,13 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, X64, muletto]]
         python-version: ["3.10"]
 
     steps:
@@ -43,7 +42,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio requests
+          pip install pytest pytest-cov pytest-asyncio requests pyyaml
+
+      - name: Check workflow runners
+        run: python scripts/check_workflow_runners.py
 
       - name: Run tests with coverage
         id: coverage
