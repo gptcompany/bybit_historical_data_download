@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ vars.CI_RUNS_ON }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -42,7 +42,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio requests
+          pip install pytest pytest-cov pytest-asyncio requests pyyaml
+
+      - name: Check workflow runners
+        run: python scripts/check_workflow_runners.py
 
       - name: Run tests with coverage
         id: coverage
