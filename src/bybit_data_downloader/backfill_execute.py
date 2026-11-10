@@ -167,14 +167,36 @@ def digest(path):
     return result.hexdigest()
 
 
+def run_stats(jobs):
+    return dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
+                started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
+
+
+def write_run_log(stats, root):
+    """Journal survives unavailable cold storage; persistence errors still fail the run."""
+    stats["finished_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        if root is None:  # Dry-run diagnostics must never create files.
+            return
+        logs = Path(root) / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / "backfill.jsonl").open("a") as stream:
+            stream.write(json.dumps(stats) + "\n"); stream.flush(); os.fsync(stream.fileno())
+    except OSError as error:
+        stats.update(outcome="failure", log_error=type(error).__name__)
+        raise
+    finally:
+        print(json.dumps(stats), flush=True)
+
+
 def execute(jobs, root, client):
-    root = Path(root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    stats = dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
-                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
-    with (root / ".backfill.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
+    stats = run_stats(jobs)
+    stats["phase"] = "execution"
+    try:
+        root = Path(root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / ".backfill.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             for job in jobs:
                 target = root / job["path"]
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -227,8 +249,8 @@ def execute(jobs, root, client):
                     finally: temporary.unlink(missing_ok=True)
                 stats["records"] += count
             stats["outcome"] = "success"
-        finally:
-            stats["finished_at"] = datetime.now(timezone.utc).isoformat()
-            (root / "logs").mkdir(exist_ok=True)
-            with (root / "logs/backfill.jsonl").open("a") as stream:
-                stream.write(json.dumps(stats) + "\n"); stream.flush(); os.fsync(stream.fileno())
+    except Exception as error:
+        stats["error"] = type(error).__name__
+        raise
+    finally:
+        write_run_log(stats, root)

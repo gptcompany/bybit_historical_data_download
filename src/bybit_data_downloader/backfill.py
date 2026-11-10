@@ -68,10 +68,17 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
-        jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
-                    args.types.split(","), args.intervals.split(","), client)
+        from .backfill_execute import execute, run_stats, write_run_log
+        planning = run_stats([])
+        planning.update(phase="planning", start_date=args.start_date.isoformat(), end_date=args.end_date.isoformat())
+        try:
+            jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
+                        args.types.split(","), args.intervals.split(","), client)
+        except Exception as error:
+            planning["error"] = type(error).__name__
+            write_run_log(planning, None if args.dry_run else args.data_root)
+            raise
         if not args.dry_run:
-            from .backfill_execute import execute
             execute(jobs, args.data_root, client)
             return
     print(json.dumps({"days": (args.end_date - args.start_date).days + 1,
@@ -81,4 +88,9 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Planning/execution already emitted the complete summary, even if JSONL failed.
+        # Suppress tracebacks without duplicating that run in the scheduler journal.
+        raise SystemExit(1)
