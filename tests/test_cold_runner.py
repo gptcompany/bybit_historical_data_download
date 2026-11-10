@@ -74,3 +74,48 @@ def test_container_failure_is_not_success(docker_calls, monkeypatch, capsys):
 def test_missing_or_reversed_range_never_launches(docker_calls, arguments, capsys):
     assert deploy.main(["backfill", "/release", *arguments]) == 1
     assert docker_calls == []
+
+
+CHILD = dict(outcome="success", downloaded=1, skipped=0, records=1440, quarantined=[],
+             files=1, timezone="UTC", started_at="2026-11-10T03:15:00+00:00",
+             finished_at="2026-11-10T03:16:00+00:00", days=["2026-11-09"], phase="execution")
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_single_enriched_child_summary(docker_calls, monkeypatch, capsys, failed):
+    child = dict(CHILD, outcome="failure" if failed else "success")
+    if failed: child["error"] = "ValueError"
+    monkeypatch.setattr(deploy.subprocess, "run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=int(failed), stdout=json.dumps(child), stderr=""))
+    assert deploy.main(["run", "/release"]) == int(failed)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    result = json.loads(lines[0])
+    for field, value in child.items(): assert result[field] == value
+    assert result["image"] == CONFIG["image"] and result["image_source_sha"] == CONFIG["image_source_sha"]
+    assert result["counts_status"] == "reported"
+
+
+@pytest.mark.parametrize("code", [125, 126, 127])
+def test_container_not_started_is_explicit(docker_calls, monkeypatch, capsys, code):
+    monkeypatch.setattr(deploy.subprocess, "run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=code, stdout="", stderr="unavailable"))
+    assert deploy.main(["run", "/release"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["counts_status"] == "not_started"
+    assert all(result[key] is None for key in ("downloaded", "skipped", "records"))
+    assert result["error"] == "ContainerNotStarted" and result["timezone"] == "UTC"
+
+
+@pytest.mark.parametrize("output", ["", "invalid", json.dumps(dict(CHILD, unexpected="rejected")),
+                                    json.dumps(dict(CHILD, records="1440")),
+                                    json.dumps(dict(CHILD, started_at="2026-11-10T03:15:00"))])
+def test_missing_or_invalid_child_summary_fails_closed(docker_calls, monkeypatch, capsys, output):
+    monkeypatch.setattr(deploy.subprocess, "run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=0, stdout=output, stderr="rejected"))
+    assert deploy.main(["run", "/release"]) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["counts_status"] == "unknown" and result["error"] == "InvalidRunSummary"
+    assert all(result[key] is None for key in ("downloaded", "skipped", "records"))
+    assert "rejected" not in captured.out + captured.err
