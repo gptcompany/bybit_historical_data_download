@@ -255,10 +255,14 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     config = load_release(release)
     metadata = dict(finding='F-649', timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
                     image=config['image'], image_source_sha=config['image_source_sha'])
-    completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
-                               capture_output=True, text=True)
-    metadata['returncode'] = completed.returncode
     unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
+    try:
+        completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
+                                   capture_output=True, text=True)
+    except OSError:
+        return dict(unknown, returncode=None, counts_status='not_started', error='ContainerNotStarted')
+    metadata['returncode'] = completed.returncode
+    unknown['returncode'] = completed.returncode
     if completed.returncode in (125, 126, 127):
         return dict(unknown, counts_status='not_started', error='ContainerNotStarted')
     try:
