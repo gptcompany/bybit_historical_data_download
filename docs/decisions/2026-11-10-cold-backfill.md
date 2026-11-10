@@ -70,3 +70,23 @@ Un solo timer scarica alle 03:15 UTC; un timer di controllo alle 02:45 UTC
 confronta tutte le unit col rendering, anche se il timer dati è alterato.
 Queste sono funzioni pure: i sottocomandi run/drift e l'installer sono la fetta
 successiva, necessaria prima di installazione e attivazione da parte di B5.
+
+
+## Installer e drift da release approvata
+
+Il manifest unico sarà `deploy/cold.json`: nessun override host. La directory
+`/opt/bybit-cold/<SHA>` deve avere HEAD uguale allo SHA e file tracciati puliti;
+l'installer richiede anche `--approved-sha <SHA>`. La `.venv` non tracciata è
+il solo ambiente dell'interprete, non una sorgente di configurazione.
+Comando previsto: `<release>/.venv/bin/python <release>/scripts/cold_deploy.py install <release> --approved-sha <SHA>`.
+L'installer scrive quattro unit e maschera service/timer `bybit-sync` e
+`bybit-sync-docker`; non esegue daemon-reload, enable, start o stop.
+Prima dell'attivazione B5 arresta/disabilita entrambe le coppie legacy, poi
+esegue daemon-reload. Le unit Docker legacy non sono più versionate qui;
+monitoring-stack ritira l'altra coppia in una PR dedicata.
+Il controllo drift confronta byte delle quattro unit, maschere e metadati
+systemd: FragmentPath esatto, nessun DropInPaths, NeedDaemonReload=no;
+le unit legacy devono risultare inactive e masked, altrimenti failure F-649.
+Output JSON nel journal, exit nonzero su drift o sorgente non verificabile;
+non vengono lette Environment o altre proprietà potenzialmente segrete.
+Il comando run e il manifest reale restano necessari prima dell'installazione.

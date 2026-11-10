@@ -1,8 +1,15 @@
 """Versioned cold deployment contract; rendering has no host side effects."""
-from datetime import date
+import argparse
+from configparser import ConfigParser, Error as ConfigError
+from datetime import date, datetime, timezone
+import json
+import os
+import subprocess
+import tempfile
+from uuid import uuid4
 from pathlib import Path, PurePosixPath
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
 
 
 SCHEMA = {
@@ -60,3 +67,95 @@ def docker_command(config, start: date, end: date, dry_run=False):
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
             config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
             "--end-date", end.isoformat(), "--data-root", "/data"] + (["--dry-run"] if dry_run else [])
+
+
+LEGACY = [name + suffix for name in ('bybit-sync', 'bybit-sync-docker')
+          for suffix in ('.service', '.timer')]
+
+
+def load_release(release, approved_sha=None):
+    """The SHA-named, tracked-clean release is the only inventory authority."""
+    release = Path(release).resolve()
+    def git(*args):
+        return subprocess.run(['git', '-C', str(release), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    sha = git('rev-parse', 'HEAD')
+    if release.name != sha or (approved_sha is not None and approved_sha != sha):
+        raise ValueError('Release does not match approved SHA')
+    if git('status', '--porcelain', '--untracked-files=no'):
+        raise ValueError('Tracked release files are dirty')
+    git('ls-files', '--error-unmatch', 'deploy/cold.json')
+    return inventory(json.loads((release / 'deploy/cold.json').read_text()))
+
+
+def install(release, approved_sha, unit_dir):
+    """Write units and legacy masks; never reload, enable, start or stop services."""
+    config = load_release(release, approved_sha)
+    unit_dir = Path(unit_dir)
+    for name, text in render_units(config, Path(release).resolve()).items():
+        with tempfile.NamedTemporaryFile(mode='w', dir=unit_dir, delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(text); stream.flush(); os.fsync(stream.fileno())
+                temporary.chmod(0o644)
+                temporary.replace(unit_dir / name)
+            finally: temporary.unlink(missing_ok=True)
+    for name in LEGACY:
+        temporary = unit_dir / ('.' + name + '.' + uuid4().hex)
+        try:
+            temporary.symlink_to('/dev/null')
+            temporary.replace(unit_dir / name)
+        finally: temporary.unlink(missing_ok=True)
+    return dict(outcome='success', installed=4, masked=len(LEGACY))
+
+
+def manager_matches(name, expected):
+    """Check only manager metadata, never environment or credential-bearing unit text."""
+    output = subprocess.run(['systemctl', 'show', name, '--property=' + ','.join(expected)],
+                            check=True, capture_output=True, text=True).stdout
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read_string('[Unit]\n' + output)
+    return dict(parser['Unit']) == expected  # Closed property schema, all values exact.
+
+
+def drift(release, unit_dir):
+    config = load_release(release)
+    release, unit_dir = Path(release).resolve(), Path(unit_dir)
+    mismatches = []
+    for name, text in render_units(config, release).items():
+        target = unit_dir / name
+        try:
+            equal = not target.is_symlink() and target.read_bytes() == text.encode()
+        except OSError:
+            equal = False
+        if not equal or not manager_matches(name, dict(FragmentPath=str(target), DropInPaths='', NeedDaemonReload='no')):
+            mismatches.append(name)
+    for name in LEGACY:
+        target = unit_dir / name
+        if (not target.is_symlink() or target.readlink() != Path('/dev/null')
+                or not manager_matches(name, dict(ActiveState='inactive', UnitFileState='masked'))):
+            mismatches.append(name)
+    return dict(outcome='failure' if mismatches else 'success', finding='F-649',
+                timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=['install', 'drift'])
+    parser.add_argument('release', type=Path)
+    parser.add_argument('--approved-sha')
+    args = parser.parse_args(argv)
+    try:
+        if args.action == 'install':
+            if not args.approved_sha: raise ValueError('Installation requires approved SHA')
+            result = install(args.release, args.approved_sha, Path('/etc/systemd/system'))
+        else: result = drift(args.release, Path('/etc/systemd/system'))
+    except (OSError, ValueError, ValidationError, ConfigError, subprocess.CalledProcessError) as error:
+        result = dict(outcome='failure', finding='F-649', error=type(error).__name__)
+    print(json.dumps(result), flush=True)
+    return int(result['outcome'] != 'success')
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
