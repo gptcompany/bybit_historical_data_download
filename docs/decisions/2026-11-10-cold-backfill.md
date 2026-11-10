@@ -90,3 +90,8 @@ le unit legacy devono risultare inactive e masked, altrimenti failure F-649.
 Output JSON nel journal, exit nonzero su drift o sorgente non verificabile;
 non vengono lette Environment o altre proprietà potenzialmente segrete.
 Il comando run e il manifest reale restano necessari prima dell'installazione.
+
+Il gate condiviso confronta inoltre i byte di `deploy/cold.json` con
+`git show <SHA>:deploy/cold.json`, senza dipendere dai flag di ottimizzazione
+dell'indice: assume-unchanged e skip-worktree non autorizzano un override host.
+La stessa verifica protegge installer e certificazione drift.
