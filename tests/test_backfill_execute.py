@@ -148,7 +148,7 @@ def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
     assert logs[-1]["quarantined"][0]["reason"]
 
 
-@pytest.mark.parametrize("field", ["price", "timestamp"])
+@pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate"])
 def test_numeric_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     job, fixture = archive(tmp_path)
     original = fixture.read_bytes()
@@ -158,7 +158,9 @@ def test_numeric_parse_failure_quarantines_coherent_archive_cache(tmp_path, fiel
         changed = rows.copy()
         changed[index] = (changed[index].replace(",Buy,1,2,", ",Buy,1,x,") if field == "price"
                           else "x" + changed[index][1:])
+        if field == "csv": changed[index] = '"' + rows[index][1:]
         candidate = gzip.compress(("\n".join(changed) + "\n").encode(), mtime=0)
+        if field == "deflate": candidate = original[:10] + b"\x07" + original[11:]
         if len(candidate) == len(original):
             malformed = candidate
             break
