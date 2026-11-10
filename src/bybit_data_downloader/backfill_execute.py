@@ -12,6 +12,7 @@ import zipfile
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -42,7 +43,6 @@ def validate(path, job):
         kind = job["type"]
         if kind == "klines":
             schema = {"type": "array", "minItems": 7, "maxItems": 7, "items": NUMBER}
-            times = [int(row[0]) for row in rows]
             step = {"1m": 60000, "5m": 300000, "15m": 900000}[job["interval"]]
         else:
             fields = {"funding": ["symbol", "fundingRate", "fundingRateTimestamp"],
@@ -51,11 +51,12 @@ def validate(path, job):
             properties = {key: ({"const": job["symbol"]} if key == "symbol" else NUMBER) for key in fields}
             if kind == "openinterest": properties["singleOpenInterest"] = NUMBER
             schema = object_schema(properties, fields)
-            times = [int(row["fundingRateTimestamp" if kind == "funding" else "timestamp"]) for row in rows]
             if kind == "funding" and job["symbol"] not in {"BTCUSDT", "ETHUSDT"}:
                 raise ValueError("No verified historical funding grid for this symbol")
             step = 28800000 if kind == "funding" else DAY
         Draft202012Validator({"type": "array", "items": schema}).validate(rows)
+        times = [int(row[0] if kind == "klines" else row[
+            "fundingRateTimestamp" if kind == "funding" else "timestamp"]) for row in rows]
         if sorted(times) != list(range(start, end, step)):
             raise ValueError("Incomplete or duplicate UTC grid")
         for row in rows:
@@ -161,7 +162,7 @@ def digest(path):
 def execute(jobs, root, client):
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    stats = dict(outcome="failure", downloaded=0, skipped=0, records=0, files=len(jobs), timezone="UTC",
+    stats = dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
                  started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
     with (root / ".backfill.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -170,13 +171,28 @@ def execute(jobs, root, client):
                 target = root / job["path"]
                 target.parent.mkdir(parents=True, exist_ok=True)
                 manifest = target.with_suffix(target.suffix + ".manifest.json")
-                manifest.unlink(missing_ok=True)
                 count = None
-                if target.exists():
+                if target.exists() or manifest.exists():
+                    reason = "missing-or-inconsistent-manifest"
                     try:
+                        saved = json.loads(manifest.read_text())
+                        fields = {key: {"const": value} for key, value in job.items()}
+                        fields.update(complete={"const": True}, records={"type": "integer", "minimum": 1},
+                                      sha256={"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                                      integrity={"const": ("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream"})
+                        Draft202012Validator(object_schema(fields)).validate(saved)
+                        reason = "sha256-mismatch"
+                        if digest(target) != saved["sha256"]: raise ValueError("SHA256 mismatch")
+                        reason = "invalid-cached-records"
                         if job["expected_bytes"] is not None and target.stat().st_size != job["expected_bytes"]: raise ValueError("Size mismatch")
                         count = validate(target, job)
-                    except (ValueError, OSError, EOFError, zipfile.BadZipFile, ValidationError): pass
+                        if count != saved["records"]: raise ValueError("Record count mismatch")
+                    except (ValueError, OSError, EOFError, zipfile.BadZipFile, ValidationError) as error:
+                        count = None
+                        suffix = ".quarantine." + uuid4().hex
+                        for rejected in (target, manifest):
+                            if rejected.exists(): rejected.rename(rejected.with_name(rejected.name + suffix))
+                        stats["quarantined"].append(dict(path=job["path"], reason=reason, error=type(error).__name__))
                 if count is None:
                     with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as stream:
                         staging = Path(stream.name)
