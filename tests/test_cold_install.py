@@ -14,7 +14,7 @@ from scripts.cold_deploy import drift, install, load_release, render_units
 
 INVENTORY = dict(image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'b' * 64,
                  image_source_sha='c' * 40, user='sam', uid=1000, gid=1000,
-                 cold_root='/data/cold/12TB/bybit_data_downloader/data')
+                 dns=['1.1.1.1', '9.9.9.9'], cold_root='/data/cold/12TB/bybit_data_downloader/data')
 
 
 def git(root, *args):
@@ -146,7 +146,7 @@ def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag,
     git(release, 'update-index', flag, 'deploy/cold.json')
     (release / 'deploy/cold.json').write_text(json.dumps(dict(INVENTORY,
         image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'd' * 64,
-        cold_root='/data/unapproved-cold')))
+        cold_root='/data/unapproved-cold', dns=['8.8.8.8', '8.8.4.4'])))
     assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
     # The approved snapshot ignores hidden edits; it must still render approved bytes.
     deployed = runpy.run_path(str(release / 'scripts/cold_deploy.py'))
@@ -154,6 +154,7 @@ def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag,
         assert deployed['install'](release, release.name, units)['outcome'] == 'success'
     else:
         assert deployed['drift'](release, units)['outcome'] == 'success'
+    assert load_release(release) == INVENTORY
     assert {name: (units / name).read_bytes() for name in expected} == expected
 
 

@@ -17,13 +17,15 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["image", "image_source_sha", "user", "uid", "gid", "cold_root"],
+    "required": ["image", "image_source_sha", "user", "uid", "gid", "cold_root", "dns"],
     "properties": {
+        "dns": {"type": "array", "minItems": 2, "uniqueItems": True,
+                "items": {"type": "string", "format": "ipv4"}},
         "image": {"type": "string", "pattern": "^ghcr[.]io/gptcompany/bybit-downloader@sha256:[0-9a-f]{64}$"},
         "image_source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "user": {"type": "string", "pattern": "^[a-z_][a-z0-9_-]*$"},
@@ -35,7 +37,7 @@ SCHEMA = {
 
 def inventory(config):
     """Reject unknown fields, mobile versions and ambiguous unit substitutions."""
-    Draft202012Validator(SCHEMA).validate(config)
+    Draft202012Validator(SCHEMA, format_checker=FormatChecker(formats=["ipv4"])).validate(config)
     for key in ("image", "image_source_sha", "user", "cold_root"):
         if any(character.isspace() for character in config[key]):
             raise ValueError(f"Whitespace forbidden in {key}")
@@ -78,7 +80,10 @@ def render_units(config, release):
 def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None):
     """Run the cold module explicitly, bypassing the image's legacy live command."""
     config = inventory(config)
-    command = ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
+    command = ["/usr/bin/docker", "run", "--rm", "--pull=never"]
+    for address in config["dns"]:
+        command.extend(["--dns", address])
+    command += ["--env", "TZ=UTC",
             "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
             config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
