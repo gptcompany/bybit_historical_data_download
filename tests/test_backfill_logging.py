@@ -103,3 +103,25 @@ def test_module_emits_one_complete_failure(scenario, tmp_path, monkeypatch, caps
         assert json.loads((root / "logs/backfill.jsonl").read_text()) == record
     else:
         assert not root.exists() and blocker.read_text() == "untouched"
+
+
+@pytest.mark.parametrize("scenario", ["head404", "reversed"])
+def test_dry_run_failure_reports_reason_without_writes(scenario, tmp_path, monkeypatch, capsys):
+    calls = []
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(404)
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+    root = tmp_path / "absent"
+    monkeypatch.setattr(sys, "argv", ["backfill", "--start-date", "2026-11-09",
+                        "--end-date", "2026-11-08" if scenario == "reversed" else "2026-11-09",
+                        "--symbols", "BTCUSDT", "--types", "trade", "--data-root", str(root), "--dry-run"])
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_module("bybit_data_downloader.backfill", run_name="__main__")
+    assert stopped.value.code == 1
+    record = failure_record(capsys)
+    assert record["phase"] == "planning"
+    assert record["error"] == ("ValueError" if scenario == "reversed" else "HTTPStatusError")
+    assert not root.exists()
+    assert calls == ([] if scenario == "reversed" else ["HEAD"])
