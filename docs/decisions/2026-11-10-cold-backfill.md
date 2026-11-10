@@ -17,6 +17,14 @@ PR successive consegnano esecuzione/validazione, installer e controllo drift.
 PR mirate in progressive-deploy e monitoring-stack ritirano rispettivamente
 Rollout/trigger e unit legacy Bybit prima dell'attivazione; niente Ansible nuovo.
 
+Il trigger `trigger-progressive-deploy.yml` è ritirato: un merge del codice cold
+non deve inviare repository_dispatch né aggiornare manifest di deploy.
+Controprova osservata dopo #4: trigger 42836738544, progressive-deploy 42836761868,
+update-manifest riuscito e wait-for-sync fallito. La build immagine resta in CI
+self-hosted di progressive-deploy, separata dal deploy; il runner CI Dell è
+ammesso da B5, mentre il writer non esegue build locali. Il digest risultante
+verrà fissato nel manifest dello scheduler. Nessuna attivazione in questa PR.
+
 ## Piano prima dei dati
 
 `PYTHONPATH=src python -m bybit_data_downloader.backfill --start-date 2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types trade,orderbook,klines,funding,openinterest,longshortratio --intervals 1m,5m,15m --data-root /data/cold/12TB/bybit_data_downloader/data --dry-run`
