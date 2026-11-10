@@ -252,5 +252,8 @@ def test_rendered_bootstrap_reads_original_script_with_replace_ref(replaced_rele
     command = shlex.split(parser['Service']['ExecStart'])
     bootstrap = command[command.index('-c') + 1]
     # --help executes only argparse, with no host installation or service action.
-    output = subprocess.check_output([sys.executable, '-I', '-c', bootstrap, '--help'], text=True)
+    with subprocess.Popen([sys.executable, '-I', '-c', bootstrap, '--help'],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
+        output, error = child.communicate()
+    assert child.returncode == 0, error
     assert 'usage:' in output and 'Replacement script executed' not in output
