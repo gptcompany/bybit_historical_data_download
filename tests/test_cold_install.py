@@ -26,8 +26,9 @@ def systemd_metadata(tmp_path, monkeypatch):
         if args[0] == 'systemctl':
             assert args[1] == 'show'  # Never enable/start/reload from these fixtures.
             name = args[2]
-            values = dict(FragmentPath=str(tmp_path / 'units' / name),
-                          DropInPaths='', NeedDaemonReload='no')
+            values = (dict(FragmentPath=str(tmp_path / 'units' / name),
+                           DropInPaths='', NeedDaemonReload='no') if name.startswith('bybit-cold')
+                      else dict(ActiveState='inactive', UnitFileState='masked'))
             values.update(overrides.get(name, {}))
             return subprocess.CompletedProcess(args, 0,
                 ''.join(f'{key}={value}\n' for key, value in values.items()), '')
@@ -116,3 +117,12 @@ def test_drift_checks_loaded_fragment_dropins_and_reload(release, tmp_path, syst
     result = drift(release, units)
     assert result['outcome'] == 'failure'
     assert result['mismatches'] == ['bybit-cold.service']
+
+
+@pytest.mark.parametrize('name', ['bybit-sync.timer', 'bybit-sync-docker.service'])
+def test_drift_fails_if_a_masked_legacy_scheduler_is_still_active(release, tmp_path, systemd_metadata, name):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    systemd_metadata[name] = dict(ActiveState='active')
+    assert drift(release, units)['mismatches'] == [name]
