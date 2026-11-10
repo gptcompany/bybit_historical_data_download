@@ -149,7 +149,7 @@ def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
 
 
 @pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate"])
-def test_numeric_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
+def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     job, fixture = archive(tmp_path)
     original = fixture.read_bytes()
     rows = gzip.decompress(original).decode().splitlines()
@@ -164,7 +164,7 @@ def test_numeric_parse_failure_quarantines_coherent_archive_cache(tmp_path, fiel
         if len(candidate) == len(original):
             malformed = candidate
             break
-    assert malformed is not None, "Fixture must reach numeric parsing with matching archive size"
+    assert malformed is not None, "Fixture must reach parsing with matching archive size"
     calls = []
     def respond(request):
         calls.append(request.method)

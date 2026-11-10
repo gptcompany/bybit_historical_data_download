@@ -9,8 +9,9 @@ import os
 import sqlite3
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,6 +38,13 @@ def positive(value, zero=False):
 
 
 def validate(path, job):
+    try:
+        return _validate(path, job)
+    except (DecimalException, csv.Error, zlib.error) as error:
+        raise ValueError("Invalid archive record or compressed stream") from error
+
+
+def _validate(path, job):
     start, end = bounds(job)
     if job["source"] == "api":
         rows = json.loads(path.read_text())
