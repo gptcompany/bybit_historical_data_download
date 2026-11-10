@@ -1,6 +1,8 @@
 """Installer and drift operate on disposable Git releases and fake unit directories."""
 import json
 import runpy
+import stat
+import zipfile
 import subprocess
 from pathlib import Path
 
@@ -174,3 +176,28 @@ def test_any_hidden_tracked_edit_cannot_influence_deployment(release, tmp_path, 
     else:
         assert deployed['drift'](release, units)['outcome'] == 'success'
     assert {name: (units / name).read_bytes() for name in expected} == expected
+
+
+def test_snapshot_is_private_excludes_untracked_files_and_is_removed(release):
+    from scripts.cold_deploy import approved_snapshot
+    (release / 'untracked.py').write_text('raise RuntimeError("unapproved")')
+    with approved_snapshot(release, release.name) as (approved, config):
+        snapshot = Path(approved['__file__']).parents[1]
+        assert stat.S_IMODE(snapshot.stat().st_mode) == 0o700
+        assert not (snapshot / 'untracked.py').exists()
+        assert config == INVENTORY
+    assert not snapshot.exists()
+
+
+def test_failed_extraction_is_closed_and_cleans_snapshot(release, tmp_path, monkeypatch):
+    seen = []
+    def failed(archive, path):
+        seen.append(Path(path))
+        raise OSError('Fixture extraction failed')
+    monkeypatch.setattr(zipfile.ZipFile, 'extractall', failed)
+    units = tmp_path / 'units'
+    units.mkdir()
+    with pytest.raises(OSError): install(release, release.name, units)
+    with pytest.raises(OSError): drift(release, units)
+    assert not list(units.iterdir())
+    assert len(seen) == 2 and all(not path.exists() for path in seen)

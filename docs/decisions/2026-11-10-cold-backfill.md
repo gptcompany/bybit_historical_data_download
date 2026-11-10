@@ -78,7 +78,9 @@ Il manifest unico sarà `deploy/cold.json`: nessun override host. La directory
 `/opt/bybit-cold/<SHA>` deve avere HEAD uguale allo SHA e file tracciati puliti;
 l'installer richiede anche `--approved-sha <SHA>`. La `.venv` non tracciata è
 il solo ambiente dell'interprete, non una sorgente di configurazione.
-Comando previsto: `<release>/.venv/bin/python <release>/scripts/cold_deploy.py install <release> --approved-sha <SHA>`.
+Bootstrap previsto, con release e SHA approvati sostituiti da B5:
+`<release>/.venv/bin/python -I -c "import subprocess;exec(subprocess.check_output(['git','-C','<release>','show','<SHA>:scripts/cold_deploy.py']))" install <release> --approved-sha <SHA>`.
+Le unit usano lo stesso bootstrap: il working tree non fornisce codice eseguibile.
 L'installer scrive quattro unit e maschera service/timer `bybit-sync` e
 `bybit-sync-docker`; non esegue daemon-reload, enable, start o stop.
 Prima dell'attivazione B5 arresta/disabilita entrambe le coppie legacy, poi
@@ -91,7 +93,12 @@ Output JSON nel journal, exit nonzero su drift o sorgente non verificabile;
 non vengono lette Environment o altre proprietà potenzialmente segrete.
 Il comando run e il manifest reale restano necessari prima dell'installazione.
 
-Il gate condiviso confronta inoltre i byte di `deploy/cold.json` con
-`git show <SHA>:deploy/cold.json`, senza dipendere dai flag di ottimizzazione
-dell'indice: assume-unchanged e skip-worktree non autorizzano un override host.
-La stessa verifica protegge installer e certificazione drift.
+Installer e drift estraggono `git archive <SHA>` in una directory temporanea
+0700, caricando da lì codice, import locali e inventario approvato. La directory
+è rimossa dal context manager anche in caso di errore; estrazione fallita
+impedisce scrittura e certificazione. Gli edit nascosti da assume-unchanged o
+skip-worktree e i file non tracciati non influenzano i byte approvati: questo è
+il criterio deliberato da B5, verificato su manifest, renderer e altri file.
+Il confine fidato è lo SHA approvato nel database oggetti Git e la `.venv`;
+`-I` esclude working directory e PYTHONPATH dal bootstrap. Non installare
+eseguendo direttamente lo script del working tree.
