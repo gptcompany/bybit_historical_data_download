@@ -1,6 +1,8 @@
 """Offline scheduler entrypoints: UTC day, drift gate and pinned container argv."""
 from datetime import datetime, timezone
 import json
+import sys
+from subprocess import run as run_child
 from types import SimpleNamespace
 
 import pytest
@@ -133,3 +135,23 @@ def test_missing_docker_binary_is_not_zero_progress(docker_calls, monkeypatch, c
     assert result['counts_status'] == 'not_started' and result['error'] == 'ContainerNotStarted'
     assert result['image'] == CONFIG['image']
     assert all(result[key] is None for key in ('downloaded', 'skipped', 'records'))
+
+
+@pytest.mark.parametrize("valid_stdout", [False, True])
+def test_non_utf8_container_streams_preserve_progress(docker_calls, monkeypatch, capsys, valid_stdout):
+    output = json.dumps(CHILD).encode() if valid_stdout else b"\xff"
+    def run(command, **kwargs):
+        # A real stdlib child exercises subprocess decoding, never Docker or HTTP.
+        code = f"import sys;sys.stdout.buffer.write({output!r});sys.stderr.buffer.write(b'\\xff')"
+        return run_child([sys.executable, "-c", code], **kwargs)
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    assert deploy.main(["run", "/release"]) == (0 if valid_stdout else 1)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    result = json.loads(lines[0])
+    assert result["image"] == CONFIG["image"] and result["image_source_sha"] == CONFIG["image_source_sha"]
+    if valid_stdout:
+        assert result["counts_status"] == "reported" and result["records"] == 1440
+    else:
+        assert result["counts_status"] == "unknown" and result["phase"] == "container"
+        assert all(result[key] is None for key in ("downloaded", "skipped", "records"))
