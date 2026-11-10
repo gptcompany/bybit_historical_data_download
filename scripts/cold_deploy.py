@@ -87,8 +87,12 @@ def load_release(release, approved_sha=None):
         raise ValueError('Release does not match approved SHA')
     if git('status', '--porcelain', '--untracked-files=no'):
         raise ValueError('Tracked release files are dirty')
-    git('ls-files', '--error-unmatch', 'deploy/cold.json')
-    return inventory(json.loads((release / 'deploy/cold.json').read_text()))
+    approved = subprocess.run(['git', '-C', str(release), 'show', sha + ':deploy/cold.json'],
+                              check=True, capture_output=True).stdout
+    manifest = (release / 'deploy/cold.json').read_bytes()
+    if manifest != approved:
+        raise ValueError('Inventory bytes differ from approved commit')
+    return inventory(json.loads(manifest))
 
 
 def install(release, approved_sha, unit_dir):

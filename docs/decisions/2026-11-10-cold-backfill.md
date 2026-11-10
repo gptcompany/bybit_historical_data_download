@@ -95,7 +95,7 @@ Il comando run e il manifest reale restano necessari prima dell'installazione.
 ## Runner cold e backfill esplicito
 
 `cold_deploy.py run <release>` seleziona ieri UTC ed esige drift assente prima
-in Docker; la selezione predefinita BTC/ETH e tutte le serie è del modulo
+di Docker; la selezione predefinita BTC/ETH e tutte le serie è del modulo
 nell'immagine fissata. stdout/stderr sono ereditati dal journal: il modulo
 registra i conteggi effettivi anche in caso di esecuzione parziale fallita.
 Il wrapper registra anche digest, SHA immagine, date, UTC e codice di uscita;
@@ -107,3 +107,7 @@ Aggiungere `--dry-run` produce il piano via sole HEAD, senza scaricare archivi;
 il gate anti-drift rimane obbligatorio. Nessuna pull automatica dell'immagine.
 Manifest reale, build-only finale e riconciliazione host sono ancora richiesti
 prima dell'attivazione B5; il writer non esegue questo comando sul Dell.
+Il gate condiviso confronta inoltre i byte di `deploy/cold.json` con
+`git show <SHA>:deploy/cold.json`, senza dipendere dai flag di ottimizzazione
+dell'indice: assume-unchanged e skip-worktree non autorizzano un override host.
+La stessa verifica protegge installer e certificazione drift.

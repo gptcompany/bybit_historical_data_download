@@ -126,3 +126,21 @@ def test_drift_fails_if_a_masked_legacy_scheduler_is_still_active(release, tmp_p
     install(release, release.name, units)
     systemd_metadata[name] = dict(ActiveState='active')
     assert drift(release, units)['mismatches'] == [name]
+
+
+@pytest.mark.parametrize('flag', ['--assume-unchanged', '--skip-worktree'])
+@pytest.mark.parametrize('action', ['install', 'drift'])
+def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag, action):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    expected = {name: (units / name).read_bytes() for name in render_units(INVENTORY, release)}
+    git(release, 'update-index', flag, 'deploy/cold.json')
+    (release / 'deploy/cold.json').write_text(json.dumps(dict(INVENTORY,
+        image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'd' * 64,
+        cold_root='/data/unapproved-cold')))
+    assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
+    with pytest.raises(ValueError):
+        if action == 'install': install(release, release.name, units)
+        else: drift(release, units)
+    assert {name: (units / name).read_bytes() for name in expected} == expected
