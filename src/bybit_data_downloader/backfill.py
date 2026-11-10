@@ -1,4 +1,4 @@
-"""Cold backfill planner. HEAD metadata only; never reads archive bodies."""
+"""Cold backfill; --dry-run uses HEAD metadata without reading archive bodies."""
 import argparse
 import json
 import re
@@ -67,11 +67,13 @@ def main(argv=None):
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    if not args.dry_run:
-        parser.error("This planner requires --dry-run; execution is delivered separately")
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
                     args.types.split(","), args.intervals.split(","), client)
+        if not args.dry_run:
+            from .backfill_execute import execute
+            execute(jobs, args.data_root, client)
+            return
     print(json.dumps({"days": (args.end_date - args.start_date).days + 1,
                       "files": len(jobs), "archive_bytes": sum(j["expected_bytes"] or 0 for j in jobs),
                       "api_files_unknown_bytes": sum(j["source"] == "api" for j in jobs),
