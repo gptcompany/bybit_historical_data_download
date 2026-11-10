@@ -1,5 +1,6 @@
 """Installer and drift operate on disposable Git releases and fake unit directories."""
 import json
+import runpy
 import subprocess
 from pathlib import Path
 
@@ -143,9 +144,12 @@ def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag,
         image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'd' * 64,
         cold_root='/data/unapproved-cold')))
     assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
-    with pytest.raises(ValueError):
-        if action == 'install': install(release, release.name, units)
-        else: drift(release, units)
+    # The approved snapshot ignores hidden edits; it must still render approved bytes.
+    deployed = runpy.run_path(str(release / 'scripts/cold_deploy.py'))
+    if action == 'install':
+        assert deployed['install'](release, release.name, units)['outcome'] == 'success'
+    else:
+        assert deployed['drift'](release, units)['outcome'] == 'success'
     assert {name: (units / name).read_bytes() for name in expected} == expected
 
 
@@ -163,7 +167,10 @@ def test_any_hidden_tracked_edit_cannot_influence_deployment(release, tmp_path, 
     target.write_text(original.replace('03:15', '04:15') if filename.endswith('.py') else 'unapproved')
     assert target.read_text() != original
     assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
-    with pytest.raises(ValueError):
-        if action == 'install': install(release, release.name, units)
-        else: drift(release, units)
+    # The approved snapshot ignores hidden edits; it must still render approved bytes.
+    deployed = runpy.run_path(str(release / 'scripts/cold_deploy.py'))
+    if action == 'install':
+        assert deployed['install'](release, release.name, units)['outcome'] == 'success'
+    else:
+        assert deployed['drift'](release, units)['outcome'] == 'success'
     assert {name: (units / name).read_bytes() for name in expected} == expected
