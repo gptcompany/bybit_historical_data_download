@@ -12,7 +12,7 @@ from scripts import cold_deploy as deploy
 
 CONFIG = dict(image="ghcr.io/gptcompany/bybit-downloader@sha256:" + "a" * 64,
               image_source_sha="b" * 40, user="sam", uid=1000, gid=1000,
-              cold_root="/data/cold/12TB/bybit_data_downloader/data")
+              dns=['1.1.1.1', '9.9.9.9'], cold_root="/data/cold/12TB/bybit_data_downloader/data")
 
 
 @pytest.fixture

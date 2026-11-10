@@ -1,6 +1,7 @@
 {
   "image": "ghcr.io/gptcompany/bybit-downloader@sha256:e88ca361b3310c6c2575cf991a0de8dde8bdaa7ad73c6b63f56b03799bfcc623",
   "image_source_sha": "949b166bcde430899cd434e476b1c6c452081b89",
+  "dns": ["1.1.1.1", "9.9.9.9"],
   "user": "sam",
   "uid": 1000,
   "gid": 1000,

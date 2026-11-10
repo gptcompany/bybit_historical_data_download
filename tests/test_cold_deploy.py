@@ -12,7 +12,7 @@ from scripts.cold_deploy import docker_command, render_units
 RELEASE = Path('/opt/bybit-cold/' + 'a' * 40)
 INVENTORY = dict(image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'b' * 64,
                  image_source_sha='c' * 40, user='sam', uid=1000, gid=1000,
-                 cold_root='/data/cold/12TB/bybit_data_downloader/data')
+                 dns=['1.1.1.1', '9.9.9.9'], cold_root='/data/cold/12TB/bybit_data_downloader/data')
 
 
 def unit(text):

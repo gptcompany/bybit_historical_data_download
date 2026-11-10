@@ -10,7 +10,7 @@ Nessun componente live viene installato sul Dell.
 
 Sorgenti uniche: `deploy/cold.json` e `scripts/cold_deploy.py` in questo repo.
 Il manifest fissa digest immagine, SHA della sorgente immagine, UID/GID, utente
-e mount cold; niente override host o segreti. Le unit sono rendering, non
+e mount cold, DNS IPv4 espliciti; niente override host o segreti. Le unit sono rendering, non
 un'altra configurazione. Default Dell: sam, 1000:1000, cold
 `/data/cold/12TB/bybit_data_downloader/data`.
 
@@ -25,6 +25,24 @@ Il manifest fa parte di quello SHA. La sorgente dell'immagine è invece lo SHA
 registrato nel manifest, precedente al commit che ne fissa il digest.
 B5 acquisisce esplicitamente l'immagine per digest prima del run: `--pull=never`
 impedisce pull impliciti; l'entrypoint Python bypassa il vecchio comando live.
+
+## Provenienza dei DNS
+
+Incidente Dell del 2026-11-10 alle 21:50 UTC, release `92d51df` con drift
+success: il piano `backfill --types trade --dry-run` falliva con `ConnectError`.
+Nell'immagine approvata `socket.getaddrinfo` non risolveva `public.bybit.com`
+né `api.bybit.com` con il DNS ereditato `192.168.1.1`; un altro dominio
+risolveva. Il resolver locale host `127.0.2.2` non è raggiungibile dal bridge
+Docker. Le controprove con `docker run --dns 1.1.1.1` e `--dns 9.9.9.9`
+risolvevano `public.bybit.com` (evidenza operativa fornita da B5).
+
+Per questo `deploy/cold.json` registra `dns: ["1.1.1.1", "9.9.9.9"]`:
+indirizzi pubblici, non segreti. Lo schema richiede almeno due IPv4 distinti;
+Docker riceve un `--dns <ip>` per ciascuno, in ordine, anche in dry-run.
+Nessun override host: inventario e codice provengono dallo stesso snapshot Git
+approvato; installazione e drift continuano a usare unit byte-identiche al
+rendering di quello SHA. Questa modifica non certifica un nuovo piano runtime:
+B5 lo verifica dopo review, merge e nuova release approvata.
 
 ## Provenienza della build
 
