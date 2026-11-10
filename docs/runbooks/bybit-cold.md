@@ -43,11 +43,13 @@ Python è il percorso scelto. B5, con i privilegi operativi già previsti, arres
 e disabilita service/timer `bybit-sync` e `bybit-sync-docker`, poi installa:
 
 ```text
-<release>/.venv/bin/python -I -c "import subprocess;exec(subprocess.check_output(['git','-C','<release>','show','<SHA>:scripts/cold_deploy.py']))" install <release> --approved-sha <SHA>
+<release>/.venv/bin/python -I -c "import subprocess;exec(subprocess.check_output(['git','--no-replace-objects','-C','<release>','show','<SHA>:scripts/cold_deploy.py']))" install <release> --approved-sha <SHA>
 ```
 
 `<release>` è `/opt/bybit-cold/<SHA>`; non usare direttamente lo script del
-working tree. L'installer estrae il Git object tree approvato in una directory
+working tree. Bootstrap e letture Git dello snapshot ignorano `refs/replace`
+con `--no-replace-objects`: l'identità dello SHA approvato resta invariata.
+L'installer estrae il Git object tree approvato in una directory
 0700 temporanea, usa codice e inventario di quello snapshot e lo elimina.
 Scrive quattro unit e quattro maschere legacy; non avvia né ricarica systemd.
 B5 esegue daemon-reload e lo stesso bootstrap con `drift <release>`: esito

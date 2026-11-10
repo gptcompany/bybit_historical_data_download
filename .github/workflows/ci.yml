@@ -32,6 +32,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -42,7 +44,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov pytest-asyncio requests pyyaml
+          pip install pytest pytest-cov pytest-asyncio requests pyyaml diff-cover
 
       - name: Check workflow runners
         run: python scripts/check_workflow_runners.py
@@ -51,12 +53,15 @@ jobs:
         id: coverage
         run: |
           PYTHONPATH=src:. pytest tests/ -v \
-            --cov=src/bybit_data_downloader \
+            --cov=src/bybit_data_downloader --cov=scripts.cold_deploy \
             --cov-report=term \
             --cov-report=json \
             --cov-report=xml:coverage.xml
           TOTAL=$(python3 -c "import json; print(int(json.load(open('coverage.json'))['totals']['percent_covered_display']))")
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+
+      - name: Check changed-line coverage
+        run: diff-cover coverage.xml --compare-branch origin/main --fail-under 85
 
       - name: Check coverage file
         run: ls -la coverage.xml

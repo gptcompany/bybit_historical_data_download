@@ -45,6 +45,11 @@ def inventory(config):
     return config
 
 
+def approved_git_command(release, *args):
+    """Read the approved object identity without repository-local replacement refs."""
+    return ['git', '--no-replace-objects', '-C', str(release), *args]
+
+
 def render_units(config, release):
     """Render exactly one downloader timer and an independent daily drift check."""
     config = inventory(config)
@@ -53,7 +58,8 @@ def render_units(config, release):
             or ".." in Path(release).parts):
         raise ValueError("Require a safe absolute release directory")
     source = Path(release).name + ':scripts/cold_deploy.py'
-    bootstrap = f"import subprocess;exec(subprocess.check_output(['git','-C','{release}','show','{source}']))"
+    command = approved_git_command(release, 'show', source)
+    bootstrap = f"import subprocess;exec(subprocess.check_output({command!r}))"
     units = {}
     for name, action, hour in (("bybit-cold", "run", "03:15"), ("bybit-cold-drift", "drift", "02:45")):
         dependencies = (f"RequiresMountsFor={config['cold_root']}\nAfter=docker.service network-online.target\n"
@@ -91,7 +97,7 @@ def approved_snapshot(release, approved_sha=None):
     """Execute deployment code and inventory only from the approved Git object tree."""
     release = Path(release).resolve()
     def git(*args):
-        return subprocess.run(['git', '-C', str(release), *args], check=True,
+        return subprocess.run(approved_git_command(release, *args), check=True,
                               capture_output=True).stdout
     sha = git('rev-parse', 'HEAD').decode().strip()
     if release.name != sha or (approved_sha is not None and approved_sha != sha):
