@@ -1,7 +1,7 @@
 """Versioned cold deployment contract; rendering has no host side effects."""
 import argparse
 from configparser import ConfigParser, Error as ConfigError
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 import subprocess
@@ -59,14 +59,17 @@ def render_units(config, release):
     return units
 
 
-def docker_command(config, start: date, end: date, dry_run=False):
+def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None):
     """Run the cold module explicitly, bypassing the image's legacy live command."""
     config = inventory(config)
-    return ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
+    command = ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
             "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
             config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
-            "--end-date", end.isoformat(), "--data-root", "/data"] + (["--dry-run"] if dry_run else [])
+            "--end-date", end.isoformat(), "--data-root", "/data"]
+    for flag, value in (("--symbols", symbols), ("--types", types), ("--intervals", intervals)):
+        if value is not None: command.extend([flag, value])
+    return command + (["--dry-run"] if dry_run else [])
 
 
 LEGACY = [name + suffix for name in ('bybit-sync', 'bybit-sync-docker')
@@ -140,19 +143,48 @@ def drift(release, unit_dir):
                 timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches)
 
 
+def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
+    """Fail closed on drift, then inherit the container's structured run counts."""
+    if start is None or end is None or start > end or end >= datetime.now(timezone.utc).date():
+        raise ValueError('Require an ordered range of closed UTC days')
+    check = drift(release, Path('/etc/systemd/system'))
+    if check['outcome'] != 'success':
+        return dict(check, phase='preflight', downloaded=0, skipped=0, records=0)
+    config = load_release(release)
+    completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals))
+    # stdout/stderr remain inherited: child JSON contains actual partial/success counts.
+    return dict(outcome='success' if completed.returncode == 0 else 'failure',
+                finding='F-649', phase='container', returncode=completed.returncode,
+                timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
+                image=config['image'], image_source_sha=config['image_source_sha'])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'drift'])
+    parser.add_argument('action', choices=['install', 'drift', 'run', 'backfill'])
     parser.add_argument('release', type=Path)
     parser.add_argument('--approved-sha')
+    parser.add_argument('--start-date', type=date.fromisoformat)
+    parser.add_argument('--end-date', type=date.fromisoformat)
+    parser.add_argument('--symbols')
+    parser.add_argument('--types')
+    parser.add_argument('--intervals')
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.action == 'install':
             if not args.approved_sha: raise ValueError('Installation requires approved SHA')
             result = install(args.release, args.approved_sha, Path('/etc/systemd/system'))
-        else: result = drift(args.release, Path('/etc/systemd/system'))
+        elif args.action == 'drift': result = drift(args.release, Path('/etc/systemd/system'))
+        else:
+            start, end = args.start_date, args.end_date
+            if args.action == 'run':
+                if start is not None or end is not None: raise ValueError('Run always selects yesterday UTC')
+                start = end = datetime.now(timezone.utc).date() - timedelta(days=1)
+            result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals)
     except (OSError, ValueError, ValidationError, ConfigError, subprocess.CalledProcessError) as error:
-        result = dict(outcome='failure', finding='F-649', error=type(error).__name__)
+        result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
+                      phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
     print(json.dumps(result), flush=True)
     return int(result['outcome'] != 'success')
 

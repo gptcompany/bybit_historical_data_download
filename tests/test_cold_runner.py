@@ -1,7 +1,6 @@
 """Offline scheduler entrypoints: UTC day, drift gate and pinned container argv."""
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest

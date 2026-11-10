@@ -90,3 +90,20 @@ le unit legacy devono risultare inactive e masked, altrimenti failure F-649.
 Output JSON nel journal, exit nonzero su drift o sorgente non verificabile;
 non vengono lette Environment o altre proprietà potenzialmente segrete.
 Il comando run e il manifest reale restano necessari prima dell'installazione.
+
+
+## Runner cold e backfill esplicito
+
+`cold_deploy.py run <release>` seleziona ieri UTC ed esige drift assente prima
+in Docker; la selezione predefinita BTC/ETH e tutte le serie è del modulo
+nell'immagine fissata. stdout/stderr sono ereditati dal journal: il modulo
+registra i conteggi effettivi anche in caso di esecuzione parziale fallita.
+Il wrapper registra anche digest, SHA immagine, date, UTC e codice di uscita;
+non inventa conteggi del container. Un preflight fallito registra conteggi zero.
+Il backfill si invoca con `cold_deploy.py backfill <release> --start-date
+2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types
+trade,orderbook,klines,funding,openinterest,longshortratio --intervals 1m,5m,15m`.
+Aggiungere `--dry-run` produce il piano via sole HEAD, senza scaricare archivi;
+il gate anti-drift rimane obbligatorio. Nessuna pull automatica dell'immagine.
+Manifest reale, build-only finale e riconciliazione host sono ancora richiesti
+prima dell'attivazione B5; il writer non esegue questo comando sul Dell.
