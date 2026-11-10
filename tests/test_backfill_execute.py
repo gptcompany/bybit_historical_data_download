@@ -108,3 +108,39 @@ def test_api_grids_and_pagination(tmp_path, kind):
     for bad in [received + received[:1], [], received[:-1]]:
         path.write_text(json.dumps(bad))
         with pytest.raises(ValueError): validate(path, job)
+
+
+@pytest.mark.parametrize("defect", ["valid-alteration", "klines-shape", "oi-shape", "missing-manifest", "invalid-manifest"])
+def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
+    kind = "openinterest" if defect == "oi-shape" else "klines"
+    rows = ([dict(openInterest="1", timestamp=str(START))] if kind == "openinterest" else
+            [[str(START + i * 60000), "2", "3", "1", "2", "0", "0"] for i in range(1440)])
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type=kind, interval="1m", source="api",
+               path="api/day.json", url="https://example.test/api", expected_bytes=None)
+    calls = []
+    def respond(request):
+        calls.append(request)
+        page = [r for r in rows if int(r[0]) <= int(request.url.params["end"])][-1000:] if kind == "klines" else rows
+        return httpx.Response(200, json=dict(retCode=0, result=dict(symbol="BTCUSDT", list=list(reversed(page)))))
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        execute([job], root, client)
+        target = root / job["path"]
+        manifest = target.with_suffix(".json.manifest.json")
+        original = target.read_bytes()
+        if defect == "valid-alteration": target.write_bytes(original.replace(b'"0"', b'"1"', 1))
+        if defect in {"klines-shape", "oi-shape"}:
+            target.write_text('[[]]' if kind == "klines" else '[{"openInterest":"1"}]')
+            data = json.loads(manifest.read_text())
+            data["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+            manifest.write_text(json.dumps(data))
+        if defect == "missing-manifest": manifest.unlink()
+        if defect == "invalid-manifest": manifest.write_text('[]')
+        rejected = target.read_bytes()
+        before = len(calls)
+        execute([job], root, client)
+    assert len(calls) > before and target.read_bytes() == original
+    assert any(p.read_bytes() == rejected for p in target.parent.glob("day.json.quarantine.*"))
+    logs = [json.loads(line) for line in (root / "logs/backfill.jsonl").read_text().splitlines()]
+    assert logs[-1]["skipped"] == 0 and logs[-1]["downloaded"] == 1
+    assert logs[-1]["quarantined"][0]["reason"]
