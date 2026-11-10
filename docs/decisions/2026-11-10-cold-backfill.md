@@ -53,3 +53,20 @@ quindi SHA256 locale nel manifest: **non equivale a un checksum upstream**.
 Un errore di integrità/schema impedisce sempre il completamento del giorno.
 HEAD del 10 novembre: trade e ob200 BTCUSDT del 9 novembre HTTP 200;
 suffix `.CHECKSUM`, `.sha256`, `.md5` HTTP 404, nessun header digest osservato.
+
+## Contratto di rendering del deploy cold
+
+`scripts/cold_deploy.py` rende le unit senza scrivere o avviare alcunché.
+L'inventario JSON chiuso richiede immagine `ghcr.io/gptcompany/bybit-downloader`
+per digest SHA256, SHA sorgente dell'immagine, utente, UID/GID e `cold_root`.
+Default previsti per Dell: sam, 1000:1000 e il cold indicato sopra. I valori
+reali saranno versionati nel manifest con il digest della build-only di B5.
+Nessun file host di override; nessun segreto necessario agli archivi pubblici.
+Il comando Docker usa `--mount` (directory preesistente), `--pull=never`, UTC
+ed entrypoint Python esplicito sul modulo backfill, senza il comando live.
+La release sarà separata dal checkout storico e identificata dallo SHA approvato.
+Il suo interprete `.venv/bin/python` richiederà jsonschema già usato nel repo.
+Un solo timer scarica alle 03:15 UTC; un timer di controllo alle 02:45 UTC
+confronta tutte le unit col rendering, anche se il timer dati è alterato.
+Queste sono funzioni pure: i sottocomandi run/drift e l'installer sono la fetta
+successiva, necessaria prima di installazione e attivazione da parte di B5.
