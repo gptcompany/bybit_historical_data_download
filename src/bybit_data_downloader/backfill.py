@@ -75,9 +75,8 @@ def main(argv=None):
             jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
                         args.types.split(","), args.intervals.split(","), client)
         except Exception as error:
-            if not args.dry_run:
-                planning["error"] = type(error).__name__
-                write_run_log(planning, args.data_root)
+            planning["error"] = type(error).__name__
+            write_run_log(planning, None if args.dry_run else args.data_root)
             raise
         if not args.dry_run:
             execute(jobs, args.data_root, client)

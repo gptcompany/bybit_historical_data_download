@@ -176,6 +176,8 @@ def write_run_log(stats, root):
     """Journal survives unavailable cold storage; persistence errors still fail the run."""
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
     try:
+        if root is None:  # Dry-run diagnostics must never create files.
+            return
         logs = Path(root) / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / "backfill.jsonl").open("a") as stream:
