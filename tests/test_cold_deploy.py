@@ -49,8 +49,10 @@ def test_inventory_rejects_unpinned_or_ambiguous_input(change):
         render_units(invalid, RELEASE)
 
 
-def test_docker_command_binds_only_explicit_cold_and_overrides_live_entrypoint():
-    command = docker_command(INVENTORY, date(2026, 6, 29), date(2026, 11, 9))
+@pytest.mark.parametrize('uid', [1000, 1000.0])
+def test_docker_command_binds_only_explicit_cold_and_overrides_live_entrypoint(uid):
+    config = dict(INVENTORY, uid=uid, gid=uid)
+    command = docker_command(config, date(2026, 6, 29), date(2026, 11, 9))
     assert command[:4] == ['/usr/bin/docker', 'run', '--rm', '--pull=never']
     assert command[command.index('--mount') + 1] == (
         'type=bind,src=/data/cold/12TB/bybit_data_downloader/data,dst=/data')
