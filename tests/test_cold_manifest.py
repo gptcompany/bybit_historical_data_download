@@ -3,6 +3,9 @@ from datetime import date
 import json
 from pathlib import Path
 
+import pytest
+from jsonschema import ValidationError
+
 from scripts.cold_deploy import docker_command, inventory, render_units
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,3 +22,10 @@ def test_real_inventory_pins_the_dell_cold_contract():
     assert config['image'] in command and '--pull=never' in command
     assert 'type=bind,src=' + config['cold_root'] + ',dst=/data' in command
     assert '--dry-run' in command and 'TZ=UTC' in command
+
+
+def test_inventory_requires_explicit_dns():
+    config = json.loads((ROOT / 'deploy/cold.json').read_bytes())
+    config.pop('dns', None)
+    with pytest.raises(ValidationError, match="'dns' is a required property"):
+        inventory(config)
