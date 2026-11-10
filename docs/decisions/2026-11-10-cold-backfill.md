@@ -78,7 +78,9 @@ Il manifest unico sarà `deploy/cold.json`: nessun override host. La directory
 `/opt/bybit-cold/<SHA>` deve avere HEAD uguale allo SHA e file tracciati puliti;
 l'installer richiede anche `--approved-sha <SHA>`. La `.venv` non tracciata è
 il solo ambiente dell'interprete, non una sorgente di configurazione.
-Comando previsto: `<release>/.venv/bin/python <release>/scripts/cold_deploy.py install <release> --approved-sha <SHA>`.
+Bootstrap previsto, con release e SHA approvati sostituiti da B5:
+`<release>/.venv/bin/python -I -c "import subprocess;exec(subprocess.check_output(['git','-C','<release>','show','<SHA>:scripts/cold_deploy.py']))" install <release> --approved-sha <SHA>`.
+Le unit usano lo stesso bootstrap: il working tree non fornisce codice eseguibile.
 L'installer scrive quattro unit e maschera service/timer `bybit-sync` e
 `bybit-sync-docker`; non esegue daemon-reload, enable, start o stop.
 Prima dell'attivazione B5 arresta/disabilita entrambe le coppie legacy, poi
@@ -96,10 +98,10 @@ Il comando run e il manifest reale restano necessari prima dell'installazione.
 
 `cold_deploy.py run <release>` seleziona ieri UTC ed esige drift assente prima
 di Docker; la selezione predefinita BTC/ETH e tutte le serie è del modulo
-nell'immagine fissata. stdout/stderr sono ereditati dal journal: il modulo
-registra i conteggi effettivi anche in caso di esecuzione parziale fallita.
-Il wrapper registra anche digest, SHA immagine, date, UTC e codice di uscita;
-non inventa conteggi del container. Un preflight fallito registra conteggi zero.
+nell'immagine fissata. Il modulo registra i conteggi effettivi anche in caso
+di esecuzione parziale fallita. Il runner li valida e arricchisce con digest,
+SHA immagine, date, UTC e codice di uscita, in un singolo evento journal.
+Un preflight fallito registra conteggi zero prima di avviare Docker.
 Il backfill si invoca con `cold_deploy.py backfill <release> --start-date
 2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types
 trade,orderbook,klines,funding,openinterest,longshortratio --intervals 1m,5m,15m`.
@@ -107,13 +109,18 @@ Aggiungere `--dry-run` produce il piano via sole HEAD, senza scaricare archivi;
 il gate anti-drift rimane obbligatorio. Nessuna pull automatica dell'immagine.
 Manifest reale, build-only finale e riconciliazione host sono ancora richiesti
 prima dell'attivazione B5; il writer non esegue questo comando sul Dell.
-Il gate condiviso confronta inoltre i byte di `deploy/cold.json` con
-`git show <SHA>:deploy/cold.json`, senza dipendere dai flag di ottimizzazione
-dell'indice: assume-unchanged e skip-worktree non autorizzano un override host.
-La stessa verifica protegge installer e certificazione drift.
 
 Il runner cattura stdout/stderr del container ed emette un solo record sul journal:
 conteggi del figlio validati con schema Pydantic chiuso, digest e SHA aggiunti.
 Exit Docker 125/126/127: counts_status=not_started e conteggi null; JSON assente,
 non valido o incoerente con exit: failure, counts_status=unknown, mai falso zero.
 Il dry-run conserva il piano validato e non esegue GET degli archivi.
+Installer e drift estraggono `git archive <SHA>` in una directory temporanea
+0700, caricando da lì codice, import locali e inventario approvato. La directory
+è rimossa dal context manager anche in caso di errore; estrazione fallita
+impedisce scrittura e certificazione. Gli edit nascosti da assume-unchanged o
+skip-worktree e i file non tracciati non influenzano i byte approvati: questo è
+il criterio deliberato da B5, verificato su manifest, renderer e altri file.
+Il confine fidato è lo SHA approvato nel database oggetti Git e la `.venv`;
+`-I` esclude working directory e PYTHONPATH dal bootstrap. Non installare
+eseguendo direttamente lo script del working tree.

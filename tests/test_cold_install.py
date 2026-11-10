@@ -1,5 +1,8 @@
 """Installer and drift operate on disposable Git releases and fake unit directories."""
 import json
+import runpy
+import stat
+import zipfile
 import subprocess
 from pathlib import Path
 
@@ -44,6 +47,9 @@ def release(tmp_path, systemd_metadata):
     source = tmp_path / 'source'
     (source / 'deploy').mkdir(parents=True)
     (source / 'deploy/cold.json').write_text(json.dumps(INVENTORY))
+    (source / 'scripts').mkdir()
+    (source / 'scripts/cold_deploy.py').write_bytes((Path(__file__).parents[1] / 'scripts/cold_deploy.py').read_bytes())
+    (source / 'other.txt').write_text('approved')
     git(source, 'init')
     git(source, 'add', '.')
     git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
@@ -140,7 +146,58 @@ def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag,
         image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'd' * 64,
         cold_root='/data/unapproved-cold')))
     assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
-    with pytest.raises(ValueError):
-        if action == 'install': install(release, release.name, units)
-        else: drift(release, units)
+    # The approved snapshot ignores hidden edits; it must still render approved bytes.
+    deployed = runpy.run_path(str(release / 'scripts/cold_deploy.py'))
+    if action == 'install':
+        assert deployed['install'](release, release.name, units)['outcome'] == 'success'
+    else:
+        assert deployed['drift'](release, units)['outcome'] == 'success'
     assert {name: (units / name).read_bytes() for name in expected} == expected
+
+
+@pytest.mark.parametrize('flag', ['--assume-unchanged', '--skip-worktree'])
+@pytest.mark.parametrize('action', ['install', 'drift'])
+@pytest.mark.parametrize('filename', ['scripts/cold_deploy.py', 'other.txt'])
+def test_any_hidden_tracked_edit_cannot_influence_deployment(release, tmp_path, flag, action, filename):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    expected = {name: (units / name).read_bytes() for name in render_units(INVENTORY, release)}
+    git(release, 'update-index', flag, filename)
+    target = release / filename
+    original = target.read_text()
+    target.write_text(original.replace('03:15', '04:15') if filename.endswith('.py') else 'unapproved')
+    assert target.read_text() != original
+    assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
+    # The approved snapshot ignores hidden edits; it must still render approved bytes.
+    deployed = runpy.run_path(str(release / 'scripts/cold_deploy.py'))
+    if action == 'install':
+        assert deployed['install'](release, release.name, units)['outcome'] == 'success'
+    else:
+        assert deployed['drift'](release, units)['outcome'] == 'success'
+    assert {name: (units / name).read_bytes() for name in expected} == expected
+
+
+def test_snapshot_is_private_excludes_untracked_files_and_is_removed(release):
+    from scripts.cold_deploy import approved_snapshot
+    (release / 'untracked.py').write_text('raise RuntimeError("unapproved")')
+    with approved_snapshot(release, release.name) as (approved, config):
+        snapshot = Path(approved['__file__']).parents[1]
+        assert stat.S_IMODE(snapshot.stat().st_mode) == 0o700
+        assert not (snapshot / 'untracked.py').exists()
+        assert config == INVENTORY
+    assert not snapshot.exists()
+
+
+def test_failed_extraction_is_closed_and_cleans_snapshot(release, tmp_path, monkeypatch):
+    seen = []
+    def failed(archive, path):
+        seen.append(Path(path))
+        raise OSError('Fixture extraction failed')
+    monkeypatch.setattr(zipfile.ZipFile, 'extractall', failed)
+    units = tmp_path / 'units'
+    units.mkdir()
+    with pytest.raises(OSError): install(release, release.name, units)
+    with pytest.raises(OSError): drift(release, units)
+    assert not list(units.iterdir())
+    assert len(seen) == 2 and all(not path.exists() for path in seen)

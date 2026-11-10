@@ -1,9 +1,14 @@
 """Versioned cold deployment contract; rendering has no host side effects."""
 import argparse
+from contextlib import contextmanager
+from io import BytesIO
 from configparser import ConfigParser, Error as ConfigError
 from datetime import date, datetime, timedelta, timezone
 import json
 import os
+import runpy
+import sys
+import zipfile
 import subprocess
 import tempfile
 from uuid import uuid4
@@ -47,6 +52,8 @@ def render_units(config, release):
     if (not Path(release).is_absolute() or any(c not in "/._-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" for c in release)
             or ".." in Path(release).parts):
         raise ValueError("Require a safe absolute release directory")
+    source = Path(release).name + ':scripts/cold_deploy.py'
+    bootstrap = f"import subprocess;exec(subprocess.check_output(['git','-C','{release}','show','{source}']))"
     units = {}
     for name, action, hour in (("bybit-cold", "run", "03:15"), ("bybit-cold-drift", "drift", "02:45")):
         dependencies = (f"RequiresMountsFor={config['cold_root']}\nAfter=docker.service network-online.target\n"
@@ -54,7 +61,7 @@ def render_units(config, release):
         units[name + ".service"] = (
             f"[Unit]\nDescription=Bybit cold {action}\n{dependencies}\n[Service]\nType=oneshot\n"
             f"User={config['user']}\nEnvironment=TZ=UTC\n"
-            f"ExecStart={release}/.venv/bin/python {release}/scripts/cold_deploy.py {action} {release}\n"
+            f'ExecStart={release}/.venv/bin/python -I -c "{bootstrap}" {action} {release}\n'
             "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")
         units[name + ".timer"] = (
             f"[Unit]\nDescription=Bybit cold {action} UTC\n\n[Timer]\nOnCalendar=*-*-* {hour}:00 UTC\n"
@@ -79,28 +86,44 @@ LEGACY = [name + suffix for name in ('bybit-sync', 'bybit-sync-docker')
           for suffix in ('.service', '.timer')]
 
 
-def load_release(release, approved_sha=None):
-    """The SHA-named, tracked-clean release is the only inventory authority."""
+@contextmanager
+def approved_snapshot(release, approved_sha=None):
+    """Execute deployment code and inventory only from the approved Git object tree."""
     release = Path(release).resolve()
     def git(*args):
         return subprocess.run(['git', '-C', str(release), *args], check=True,
-                              capture_output=True, text=True).stdout.strip()
-    sha = git('rev-parse', 'HEAD')
+                              capture_output=True).stdout
+    sha = git('rev-parse', 'HEAD').decode().strip()
     if release.name != sha or (approved_sha is not None and approved_sha != sha):
         raise ValueError('Release does not match approved SHA')
     if git('status', '--porcelain', '--untracked-files=no'):
         raise ValueError('Tracked release files are dirty')
-    approved = subprocess.run(['git', '-C', str(release), 'show', sha + ':deploy/cold.json'],
-                              check=True, capture_output=True).stdout
-    manifest = (release / 'deploy/cold.json').read_bytes()
-    if manifest != approved:
-        raise ValueError('Inventory bytes differ from approved commit')
-    return inventory(json.loads(manifest))
+    with tempfile.TemporaryDirectory(prefix='bybit-approved-') as directory:
+        snapshot = Path(directory)  # TemporaryDirectory creates mode 0700.
+        with zipfile.ZipFile(BytesIO(git('archive', '--format=zip', sha))) as archive:
+            archive.extractall(snapshot)
+        old_path = sys.path[:]
+        try:
+            sys.path[:0] = [str(snapshot), str(snapshot / 'scripts')]
+            approved = runpy.run_path(str(snapshot / 'scripts/cold_deploy.py'))
+            config = approved['inventory'](json.loads((snapshot / 'deploy/cold.json').read_bytes()))
+            yield approved, config
+        finally:
+            sys.path[:] = old_path
+
+
+def load_release(release, approved_sha=None):
+    with approved_snapshot(release, approved_sha) as (_, config):
+        return config
 
 
 def install(release, approved_sha, unit_dir):
     """Write units and legacy masks; never reload, enable, start or stop services."""
-    config = load_release(release, approved_sha)
+    with approved_snapshot(release, approved_sha) as (approved, config):
+        return approved['_install'](config, release, unit_dir)
+
+
+def _install(config, release, unit_dir):
     unit_dir = Path(unit_dir)
     for name, text in render_units(config, Path(release).resolve()).items():
         with tempfile.NamedTemporaryFile(mode='w', dir=unit_dir, delete=False) as stream:
@@ -130,7 +153,11 @@ def manager_matches(name, expected):
 
 
 def drift(release, unit_dir):
-    config = load_release(release)
+    with approved_snapshot(release) as (approved, config):
+        return approved['_drift'](config, release, unit_dir)
+
+
+def _drift(config, release, unit_dir):
     release, unit_dir = Path(release).resolve(), Path(unit_dir)
     mismatches = []
     for name, text in render_units(config, release).items():
@@ -270,7 +297,7 @@ def main(argv=None):
                 if start is not None or end is not None: raise ValueError('Run always selects yesterday UTC')
                 start = end = datetime.now(timezone.utc).date() - timedelta(days=1)
             result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals)
-    except (OSError, ValueError, ValidationError, ConfigError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
                       phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
     print(json.dumps(result), flush=True)
