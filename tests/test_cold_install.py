@@ -44,6 +44,9 @@ def release(tmp_path, systemd_metadata):
     source = tmp_path / 'source'
     (source / 'deploy').mkdir(parents=True)
     (source / 'deploy/cold.json').write_text(json.dumps(INVENTORY))
+    (source / 'scripts').mkdir()
+    (source / 'scripts/cold_deploy.py').write_bytes((Path(__file__).parents[1] / 'scripts/cold_deploy.py').read_bytes())
+    (source / 'other.txt').write_text('approved')
     git(source, 'init')
     git(source, 'add', '.')
     git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
@@ -139,6 +142,26 @@ def test_hidden_manifest_edit_cannot_install_or_certify(release, tmp_path, flag,
     (release / 'deploy/cold.json').write_text(json.dumps(dict(INVENTORY,
         image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'd' * 64,
         cold_root='/data/unapproved-cold')))
+    assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
+    with pytest.raises(ValueError):
+        if action == 'install': install(release, release.name, units)
+        else: drift(release, units)
+    assert {name: (units / name).read_bytes() for name in expected} == expected
+
+
+@pytest.mark.parametrize('flag', ['--assume-unchanged', '--skip-worktree'])
+@pytest.mark.parametrize('action', ['install', 'drift'])
+@pytest.mark.parametrize('filename', ['scripts/cold_deploy.py', 'other.txt'])
+def test_any_hidden_tracked_edit_cannot_influence_deployment(release, tmp_path, flag, action, filename):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    expected = {name: (units / name).read_bytes() for name in render_units(INVENTORY, release)}
+    git(release, 'update-index', flag, filename)
+    target = release / filename
+    original = target.read_text()
+    target.write_text(original.replace('03:15', '04:15') if filename.endswith('.py') else 'unapproved')
+    assert target.read_text() != original
     assert git(release, 'status', '--porcelain', '--untracked-files=no') == ''
     with pytest.raises(ValueError):
         if action == 'install': install(release, release.name, units)
