@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from scripts.cold_deploy import drift, install, load_release, render_units
-from tests.test_cold_deploy import INVENTORY
+
+INVENTORY = dict(image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'b' * 64,
+                 image_source_sha='c' * 40, user='sam', uid=1000, gid=1000,
+                 cold_root='/data/cold/12TB/bybit_data_downloader/data')
 
 
 def git(root, *args):
