@@ -1,6 +1,8 @@
 """Run failures before download must remain observable without archive access."""
 import fcntl
 import json
+import runpy
+import sys
 
 import httpx
 import pytest
@@ -59,3 +61,45 @@ def test_success_counts_are_available_to_journal(tmp_path, capsys):
     record = json.loads(capsys.readouterr().out)
     assert record["outcome"] == "success" and record["files"] == 0
     assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
+
+
+@pytest.mark.parametrize("scenario", ["head404", "lock", "validation", "root"])
+def test_module_emits_one_complete_failure(scenario, tmp_path, monkeypatch, capsys):
+    """Exercise the documented -m entry point, including its exception handler."""
+    def respond(request):
+        if scenario == "head404":
+            return httpx.Response(404)
+        if request.method == "HEAD":
+            return httpx.Response(200, headers={"Content-Length": "3"})
+        return httpx.Response(200, content=b"bad")
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+    root = tmp_path / "cold"
+    root.mkdir()
+    if scenario == "root":
+        blocker = tmp_path / "file"
+        blocker.write_text("untouched")
+        root = blocker / "absent"
+    kind = "trade" if scenario in ("head404", "validation") else "klines"
+    monkeypatch.setattr(sys, "argv", ["backfill", "--start-date", "2026-11-09",
+                        "--end-date", "2026-11-09", "--symbols", "BTCUSDT",
+                        "--types", kind, "--data-root", str(root)])
+    with (tmp_path / "cold/.backfill.lock").open("a") as lock:
+        if scenario == "lock":
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit) as stopped:
+            runpy.run_module("bybit_data_downloader.backfill", run_name="__main__")
+    assert stopped.value.code == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    lines = captured.out.splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["outcome"] == "failure" and record["timezone"] == "UTC"
+    assert all(record[field] == 0 for field in ("downloaded", "skipped", "records"))
+    assert record["finished_at"] >= record["started_at"]
+    assert record["phase"] == ("planning" if scenario == "head404" else "execution")
+    if scenario != "root":
+        assert json.loads((root / "logs/backfill.jsonl").read_text()) == record
+    else:
+        assert not root.exists() and blocker.read_text() == "untouched"
