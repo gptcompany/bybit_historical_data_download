@@ -31,6 +31,9 @@ def test_scheduler_render_is_explicit_and_has_no_legacy_authority():
     assert service['Service']['Environment'] == 'TZ=UTC'
     assert str(RELEASE) in service['Service']['ExecStart']
     assert ' run ' in service['Service']['ExecStart']
+    assert ' -I -c ' in service['Service']['ExecStart']
+    assert 'show' in service['Service']['ExecStart']
+    assert RELEASE.name + ':scripts/cold_deploy.py' in service['Service']['ExecStart']
     assert unit(rendered['bybit-cold.timer'])['Timer']['OnCalendar'] == '*-*-* 03:15:00 UTC'
     assert unit(rendered['bybit-cold.timer'])['Timer']['Persistent'] == 'true'
     drift = unit(rendered['bybit-cold-drift.timer'])
