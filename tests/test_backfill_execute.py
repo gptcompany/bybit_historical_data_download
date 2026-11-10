@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from bybit_data_downloader.backfill_execute import execute, validate
+from bybit_data_downloader.backfill_execute import api_rows, execute, validate
 
 
 START = int(datetime(2026, 11, 9, tzinfo=timezone.utc).timestamp() * 1000)
@@ -84,3 +84,27 @@ def test_failed_day_is_never_published(tmp_path):
     assert not (root / job["path"]).exists()
     assert not list(root.rglob("*.manifest.json"))
     assert json.loads((root / "logs/backfill.jsonl").read_text())["outcome"] == "failure"
+
+
+@pytest.mark.parametrize("kind", ["klines", "funding", "openinterest", "longshortratio"])
+def test_api_grids_and_pagination(tmp_path, kind):
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type=kind, interval="1m",
+               source="api", path="api/day.json", url="https://example.test/api", expected_bytes=None)
+    if kind == "klines": rows = [[str(START + i * 60000), "2", "3", "1", "2", "0", "0"] for i in range(1440)]
+    elif kind == "funding": rows = [dict(symbol="BTCUSDT", fundingRate="-0.001", fundingRateTimestamp=str(START + i * 28800000)) for i in range(3)]
+    elif kind == "openinterest": rows = [dict(openInterest="1", timestamp=str(START))]
+    else: rows = [dict(symbol="BTCUSDT", buyRatio="0.4", sellRatio="0.6", timestamp=str(START))]
+    calls = []
+    def respond(request):
+        calls.append(request.url.params)
+        page = [row for row in rows if int(row[0]) <= int(request.url.params["end"])][-1000:] if kind == "klines" else rows
+        return httpx.Response(200, json=dict(retCode=0, result=dict(symbol="BTCUSDT", list=list(reversed(page)))))
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        received = api_rows(client, job)
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps(received))
+    assert validate(path, job) == len(rows)
+    assert len(calls) == (2 if kind == "klines" else 1)
+    for bad in [received + received[:1], [], received[:-1]]:
+        path.write_text(json.dumps(bad))
+        with pytest.raises(ValueError): validate(path, job)
