@@ -238,7 +238,8 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
         if dry_run and completed.returncode == 0:
             plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
             return dict(plan, **metadata, outcome='success', phase='planning')
-        summary = RunSummary.model_validate_json(completed.stdout).model_dump(mode='json', exclude_none=True)
+        RunSummary.model_validate_json(completed.stdout)
+        summary = json.loads(completed.stdout)  # Preserve the validated child's timestamp spelling.
         if (completed.returncode == 0) != (summary['outcome'] == 'success'):
             raise ValueError('Child exit status contradicts summary')
     except ValueError:
