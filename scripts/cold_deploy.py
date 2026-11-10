@@ -56,7 +56,7 @@ def docker_command(config, start: date, end: date, dry_run=False):
     """Run the cold module explicitly, bypassing the image's legacy live command."""
     config = inventory(config)
     return ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
-            "--env", "PYTHONPATH=/app/src", "--user", f"{config['uid']}:{config['gid']}",
+            "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
             config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
             "--end-date", end.isoformat(), "--data-root", "/data"] + (["--dry-run"] if dry_run else [])
