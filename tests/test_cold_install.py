@@ -1,6 +1,8 @@
 """Installer and drift operate on disposable Git releases and fake unit directories."""
 import json
 import runpy
+import shlex
+import sys
 import stat
 import zipfile
 import subprocess
@@ -201,3 +203,54 @@ def test_failed_extraction_is_closed_and_cleans_snapshot(release, tmp_path, monk
     with pytest.raises(OSError): drift(release, units)
     assert not list(units.iterdir())
     assert len(seen) == 2 and all(not path.exists() for path in seen)
+
+
+@pytest.fixture
+def replaced_release(release):
+    """Keep the approved checkout, but redirect its commit to different code/config."""
+    script = release / 'scripts/cold_deploy.py'
+    script.write_text("raise RuntimeError('Replacement script executed')\n")
+    (release / 'deploy/cold.json').write_text(json.dumps(dict(INVENTORY, uid=1001)))
+    git(release, 'add', '.')
+    git(release, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-m', 'Unapproved replacement')
+    replacement = git(release, 'rev-parse', 'HEAD')
+    git(release, 'checkout', '--detach', release.name)
+    git(release, 'replace', release.name, replacement)
+    # Counterexample: an ordinary show really returns the substituted script.
+    assert 'Replacement script executed' in git(release, 'show', release.name + ':scripts/cold_deploy.py')
+    return release
+
+
+@pytest.mark.parametrize('action', ['install', 'drift'])
+def test_replace_ref_cannot_substitute_approved_install_or_drift(replaced_release, tmp_path, action):
+    release = replaced_release
+    units = tmp_path / 'units'
+    units.mkdir()
+    expected = render_units(INVENTORY, release)
+    # Supply approved units so drift independently checks the original contract.
+    for name, text in expected.items():
+        (units / name).write_text(text)
+    from scripts.cold_deploy import LEGACY
+    for name in LEGACY:
+        (units / name).symlink_to('/dev/null')
+    result = (install(release, release.name, units) if action == 'install'
+              else drift(release, units))
+    assert result['outcome'] == 'success'
+    assert load_release(release) == INVENTORY
+    assert {name: (units / name).read_text() for name in expected} == expected
+    if action == 'drift':
+        (units / 'bybit-cold.timer').write_text('unapproved')
+        assert drift(release, units)['mismatches'] == ['bybit-cold.timer']
+
+
+@pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold-drift.service'])
+def test_rendered_bootstrap_reads_original_script_with_replace_ref(replaced_release, name):
+    from configparser import ConfigParser
+    parser = ConfigParser(interpolation=None)
+    parser.read_string(render_units(INVENTORY, replaced_release)[name])
+    command = shlex.split(parser['Service']['ExecStart'])
+    bootstrap = command[command.index('-c') + 1]
+    # --help executes only argparse, with no host installation or service action.
+    output = subprocess.check_output([sys.executable, '-I', '-c', bootstrap, '--help'], text=True)
+    assert 'usage:' in output and 'Replacement script executed' not in output
