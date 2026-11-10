@@ -27,6 +27,16 @@ L'esecutore dovrà validare schema, simbolo, giorno UTC, duplicati e griglie pri
 di pubblicare atomicamente file e manifest; file esistente non implica completo.
 Ogni run dovrà registrare esito e conteggi e lasciare incompleto un giorno fallito.
 
+L'esecutore si invoca con lo stesso comando senza `--dry-run`; esclusione con
+flock, staging sul filesystem di destinazione, fsync e rename prima del manifest.
+`complete` certifica una sola serie/giorno selezionata, mai l'intero dataset.
+Un file presente è riverificato prima di essere riutilizzato; nessuna append.
+Archivi: ID univoci su SQLite temporaneo, timestamp ordinati e almeno un record
+per minuto UTC (criterio conservativo per BTC/ETH); ZIP con un solo membro `.data`.
+API: klines 1/5/15m, OI e ratio 1d, funding BTC/ETH alle 00/08/16 UTC;
+altre griglie funding non certificate vengono rifiutate. Log JSONL in `logs/`.
+Un errore interrompe il run con esito failure e nessun manifest della serie fallita.
+
 ## Integrità: limite esplicito Bybit
 
 Bybit non fornisce un checksum ufficiale nei percorsi archivi verificati.
