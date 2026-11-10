@@ -8,6 +8,9 @@ import subprocess
 import tempfile
 from uuid import uuid4
 from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -147,20 +150,100 @@ def drift(release, unit_dir):
                 timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches)
 
 
+Count = Annotated[int, Field(ge=0)]
+
+
+class ClosedRecord(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+
+
+class Quarantine(ClosedRecord):
+    path: str
+    reason: str
+    error: str
+
+
+class RunSummary(ClosedRecord):
+    outcome: Literal['success', 'failure']
+    downloaded: Count
+    skipped: Count
+    records: Count
+    files: Count
+    quarantined: list[Quarantine]
+    timezone: Literal['UTC']
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    days: list[date]
+    phase: Literal['planning', 'execution']
+    error: str | None = None
+    log_error: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode='after')
+    def utc_and_order(self):
+        if (self.started_at.utcoffset() != timedelta(0) or self.finished_at.utcoffset() != timedelta(0)
+                or self.finished_at < self.started_at):
+            raise ValueError('Require ordered UTC timestamps')
+        if self.downloaded + self.skipped > self.files:
+            raise ValueError('Completed files exceed plan')
+        return self
+
+
+class PlanJob(ClosedRecord):
+    day: date
+    symbol: Annotated[str, Field(pattern='^[A-Z0-9]+USDT$')]
+    type: Literal['trade', 'orderbook', 'klines', 'funding', 'openinterest', 'longshortratio']
+    interval: Literal['1m', '5m', '15m'] | None
+    timezone: Literal['UTC']
+    expected_bytes: Annotated[int, Field(gt=0)] | None
+    source: Literal['archive', 'api']
+    url: str
+    path: str
+
+
+class PlanSummary(ClosedRecord):
+    days: Annotated[int, Field(gt=0)]
+    files: Count
+    archive_bytes: Count
+    api_files_unknown_bytes: Count
+    data_root: str
+    jobs: list[PlanJob]
+
+    @model_validator(mode='after')
+    def counts(self):
+        if (self.files != len(self.jobs) or self.archive_bytes != sum(job.expected_bytes or 0 for job in self.jobs)
+                or self.api_files_unknown_bytes != sum(job.source == 'api' for job in self.jobs)):
+            raise ValueError('Plan counts differ from jobs')
+        return self
+
+
 def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
-    """Fail closed on drift, then inherit the container's structured run counts."""
+    """Fail closed on drift and emit one validated, enriched container record."""
     if start is None or end is None or start > end or end >= datetime.now(timezone.utc).date():
         raise ValueError('Require an ordered range of closed UTC days')
     check = drift(release, Path('/etc/systemd/system'))
     if check['outcome'] != 'success':
         return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
     config = load_release(release)
-    completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals))
-    # stdout/stderr remain inherited: child JSON contains actual partial/success counts.
-    return dict(outcome='success' if completed.returncode == 0 else 'failure',
-                finding='F-649', phase='container', returncode=completed.returncode,
-                timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
-                image=config['image'], image_source_sha=config['image_source_sha'])
+    metadata = dict(finding='F-649', timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
+                    image=config['image'], image_source_sha=config['image_source_sha'])
+    completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
+                               capture_output=True, text=True)
+    metadata['returncode'] = completed.returncode
+    unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
+    if completed.returncode in (125, 126, 127):
+        return dict(unknown, counts_status='not_started', error='ContainerNotStarted')
+    try:
+        if dry_run and completed.returncode == 0:
+            plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
+            return dict(plan, **metadata, outcome='success', phase='planning')
+        summary = RunSummary.model_validate_json(completed.stdout).model_dump(mode='json', exclude_none=True)
+        if (completed.returncode == 0) != (summary['outcome'] == 'success'):
+            raise ValueError('Child exit status contradicts summary')
+    except ValueError:
+        return dict(unknown, counts_status='unknown', error='InvalidRunSummary')
+    return dict(summary, **metadata, counts_status='reported')
 
 
 def main(argv=None):

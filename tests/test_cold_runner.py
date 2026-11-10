@@ -22,7 +22,9 @@ def docker_calls(monkeypatch):
         assert command[0] == "/usr/bin/docker"
         assert not kwargs.get("shell", False)
         calls.append(command)
-        return SimpleNamespace(returncode=0)
+        output = dict(days=134, files=0, archive_bytes=0, api_files_unknown_bytes=0,
+                      data_root='/data', jobs=[]) if '--dry-run' in command else CHILD
+        return SimpleNamespace(returncode=0, stdout=json.dumps(output), stderr='')
     monkeypatch.setattr(deploy.subprocess, "run", run)
     return calls
 
@@ -65,7 +67,8 @@ def test_drift_blocks_container(docker_calls, monkeypatch, capsys):
 
 
 def test_container_failure_is_not_success(docker_calls, monkeypatch, capsys):
-    monkeypatch.setattr(deploy.subprocess, "run", lambda command: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(deploy.subprocess, "run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=1, stdout=json.dumps(dict(CHILD, outcome='failure', error='ValueError')), stderr=''))
     assert deploy.main(["run", "/release"]) == 1
     assert json.loads(capsys.readouterr().out)["outcome"] == "failure"
 

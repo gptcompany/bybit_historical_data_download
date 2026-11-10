@@ -111,3 +111,9 @@ Il gate condiviso confronta inoltre i byte di `deploy/cold.json` con
 `git show <SHA>:deploy/cold.json`, senza dipendere dai flag di ottimizzazione
 dell'indice: assume-unchanged e skip-worktree non autorizzano un override host.
 La stessa verifica protegge installer e certificazione drift.
+
+Il runner cattura stdout/stderr del container ed emette un solo record sul journal:
+conteggi del figlio validati con schema Pydantic chiuso, digest e SHA aggiunti.
+Exit Docker 125/126/127: counts_status=not_started e conteggi null; JSON assente,
+non valido o incoerente con exit: failure, counts_status=unknown, mai falso zero.
+Il dry-run conserva il piano validato e non esegue GET degli archivi.
