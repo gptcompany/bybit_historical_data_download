@@ -153,7 +153,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
         raise ValueError('Require an ordered range of closed UTC days')
     check = drift(release, Path('/etc/systemd/system'))
     if check['outcome'] != 'success':
-        return dict(check, phase='preflight', downloaded=0, skipped=0, records=0)
+        return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
     config = load_release(release)
     completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals))
     # stdout/stderr remain inherited: child JSON contains actual partial/success counts.
