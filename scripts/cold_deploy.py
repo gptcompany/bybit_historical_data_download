@@ -3,7 +3,7 @@ import argparse
 from contextlib import contextmanager
 from io import BytesIO
 from configparser import ConfigParser, Error as ConfigError
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 import runpy
@@ -13,6 +13,9 @@ import subprocess
 import tempfile
 from uuid import uuid4
 from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -66,14 +69,17 @@ def render_units(config, release):
     return units
 
 
-def docker_command(config, start: date, end: date, dry_run=False):
+def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None):
     """Run the cold module explicitly, bypassing the image's legacy live command."""
     config = inventory(config)
-    return ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
+    command = ["/usr/bin/docker", "run", "--rm", "--pull=never", "--env", "TZ=UTC",
             "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
             config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
-            "--end-date", end.isoformat(), "--data-root", "/data"] + (["--dry-run"] if dry_run else [])
+            "--end-date", end.isoformat(), "--data-root", "/data"]
+    for flag, value in (("--symbols", symbols), ("--types", types), ("--intervals", intervals)):
+        if value is not None: command.extend([flag, value])
+    return command + (["--dry-run"] if dry_run else [])
 
 
 LEGACY = [name + suffix for name in ('bybit-sync', 'bybit-sync-docker')
@@ -171,19 +177,133 @@ def _drift(config, release, unit_dir):
                 timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches)
 
 
+Count = Annotated[int, Field(ge=0)]
+
+
+class ClosedRecord(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+
+
+class Quarantine(ClosedRecord):
+    path: str
+    reason: str
+    error: str
+
+
+class RunSummary(ClosedRecord):
+    outcome: Literal['success', 'failure']
+    downloaded: Count
+    skipped: Count
+    records: Count
+    files: Count
+    quarantined: list[Quarantine]
+    timezone: Literal['UTC']
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    days: list[date]
+    phase: Literal['planning', 'execution']
+    error: str | None = None
+    log_error: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode='after')
+    def utc_and_order(self):
+        if (self.started_at.utcoffset() != timedelta(0) or self.finished_at.utcoffset() != timedelta(0)
+                or self.finished_at < self.started_at):
+            raise ValueError('Require ordered UTC timestamps')
+        if self.downloaded + self.skipped > self.files:
+            raise ValueError('Completed files exceed plan')
+        return self
+
+
+class PlanJob(ClosedRecord):
+    day: date
+    symbol: Annotated[str, Field(pattern='^[A-Z0-9]+USDT$')]
+    type: Literal['trade', 'orderbook', 'klines', 'funding', 'openinterest', 'longshortratio']
+    interval: Literal['1m', '5m', '15m'] | None
+    timezone: Literal['UTC']
+    expected_bytes: Annotated[int, Field(gt=0)] | None
+    source: Literal['archive', 'api']
+    url: str
+    path: str
+
+
+class PlanSummary(ClosedRecord):
+    days: Annotated[int, Field(gt=0)]
+    files: Count
+    archive_bytes: Count
+    api_files_unknown_bytes: Count
+    data_root: str
+    jobs: list[PlanJob]
+
+    @model_validator(mode='after')
+    def counts(self):
+        if (self.files != len(self.jobs) or self.archive_bytes != sum(job.expected_bytes or 0 for job in self.jobs)
+                or self.api_files_unknown_bytes != sum(job.source == 'api' for job in self.jobs)):
+            raise ValueError('Plan counts differ from jobs')
+        return self
+
+
+def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
+    """Fail closed on drift and emit one validated, enriched container record."""
+    if start is None or end is None or start > end or end >= datetime.now(timezone.utc).date():
+        raise ValueError('Require an ordered range of closed UTC days')
+    check = drift(release, Path('/etc/systemd/system'))
+    if check['outcome'] != 'success':
+        return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
+    config = load_release(release)
+    metadata = dict(finding='F-649', timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
+                    image=config['image'], image_source_sha=config['image_source_sha'])
+    unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
+    try:
+        completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
+                                   capture_output=True)
+    except OSError:
+        return dict(unknown, returncode=None, counts_status='not_started', error='ContainerNotStarted')
+    metadata['returncode'] = completed.returncode
+    unknown['returncode'] = completed.returncode
+    if completed.returncode in (125, 126, 127):
+        return dict(unknown, counts_status='not_started', error='ContainerNotStarted')
+    try:
+        if dry_run and completed.returncode == 0:
+            plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
+            return dict(plan, **metadata, outcome='success', phase='planning')
+        RunSummary.model_validate_json(completed.stdout)
+        summary = json.loads(completed.stdout)  # Preserve the validated child's timestamp spelling.
+        if (completed.returncode == 0) != (summary['outcome'] == 'success'):
+            raise ValueError('Child exit status contradicts summary')
+    except ValueError:
+        return dict(unknown, counts_status='unknown', error='InvalidRunSummary')
+    return dict(summary, **metadata, counts_status='reported')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'drift'])
+    parser.add_argument('action', choices=['install', 'drift', 'run', 'backfill'])
     parser.add_argument('release', type=Path)
     parser.add_argument('--approved-sha')
+    parser.add_argument('--start-date', type=date.fromisoformat)
+    parser.add_argument('--end-date', type=date.fromisoformat)
+    parser.add_argument('--symbols')
+    parser.add_argument('--types')
+    parser.add_argument('--intervals')
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.action == 'install':
             if not args.approved_sha: raise ValueError('Installation requires approved SHA')
             result = install(args.release, args.approved_sha, Path('/etc/systemd/system'))
-        else: result = drift(args.release, Path('/etc/systemd/system'))
+        elif args.action == 'drift': result = drift(args.release, Path('/etc/systemd/system'))
+        else:
+            start, end = args.start_date, args.end_date
+            if args.action == 'run':
+                if start is not None or end is not None: raise ValueError('Run always selects yesterday UTC')
+                start = end = datetime.now(timezone.utc).date() - timedelta(days=1)
+            result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals)
     except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
-        result = dict(outcome='failure', finding='F-649', error=type(error).__name__)
+        result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
+                      phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
     print(json.dumps(result), flush=True)
     return int(result['outcome'] != 'success')
 

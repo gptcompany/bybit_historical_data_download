@@ -93,6 +93,28 @@ Output JSON nel journal, exit nonzero su drift o sorgente non verificabile;
 non vengono lette Environment o altre proprietà potenzialmente segrete.
 Il comando run e il manifest reale restano necessari prima dell'installazione.
 
+
+## Runner cold e backfill esplicito
+
+`cold_deploy.py run <release>` seleziona ieri UTC ed esige drift assente prima
+di Docker; la selezione predefinita BTC/ETH e tutte le serie è del modulo
+nell'immagine fissata. Il modulo registra i conteggi effettivi anche in caso
+di esecuzione parziale fallita. Il runner li valida e arricchisce con digest,
+SHA immagine, date, UTC e codice di uscita, in un singolo evento journal.
+Un preflight fallito registra conteggi zero prima di avviare Docker.
+Il backfill si invoca con `cold_deploy.py backfill <release> --start-date
+2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types
+trade,orderbook,klines,funding,openinterest,longshortratio --intervals 1m,5m,15m`.
+Aggiungere `--dry-run` produce il piano via sole HEAD, senza scaricare archivi;
+il gate anti-drift rimane obbligatorio. Nessuna pull automatica dell'immagine.
+Manifest reale, build-only finale e riconciliazione host sono ancora richiesti
+prima dell'attivazione B5; il writer non esegue questo comando sul Dell.
+
+Il runner cattura stdout/stderr del container ed emette un solo record sul journal:
+conteggi del figlio validati con schema Pydantic chiuso, digest e SHA aggiunti.
+Exit Docker 125/126/127: counts_status=not_started e conteggi null; JSON assente,
+non valido o incoerente con exit: failure, counts_status=unknown, mai falso zero.
+Il dry-run conserva il piano validato e non esegue GET degli archivi.
 Installer e drift estraggono `git archive <SHA>` in una directory temporanea
 0700, caricando da lì codice, import locali e inventario approvato. La directory
 è rimossa dal context manager anche in caso di errore; estrazione fallita
