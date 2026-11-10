@@ -258,7 +258,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
     try:
         completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
-                                   capture_output=True, text=True)
+                                   capture_output=True)
     except OSError:
         return dict(unknown, returncode=None, counts_status='not_started', error='ContainerNotStarted')
     metadata['returncode'] = completed.returncode
