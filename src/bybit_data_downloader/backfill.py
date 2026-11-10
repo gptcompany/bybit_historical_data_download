@@ -91,7 +91,7 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:
-        # Do not expose rejected records or response content in a traceback.
-        print(json.dumps(dict(outcome="failure", error=type(error).__name__)), flush=True)
+    except Exception:
+        # Planning/execution already emitted the complete summary, even if JSONL failed.
+        # Suppress tracebacks without duplicating that run in the scheduler journal.
         raise SystemExit(1)
