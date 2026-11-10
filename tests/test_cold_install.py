@@ -18,7 +18,28 @@ def git(root, *args):
 
 
 @pytest.fixture
-def release(tmp_path):
+def systemd_metadata(tmp_path, monkeypatch):
+    overrides = {}
+    original = subprocess.run
+
+    def offline(args, **kwargs):
+        if args[0] == 'systemctl':
+            assert args[1] == 'show'  # Never enable/start/reload from these fixtures.
+            name = args[2]
+            values = dict(FragmentPath=str(tmp_path / 'units' / name),
+                          DropInPaths='', NeedDaemonReload='no')
+            values.update(overrides.get(name, {}))
+            return subprocess.CompletedProcess(args, 0,
+                ''.join(f'{key}={value}\n' for key, value in values.items()), '')
+        assert args[0] == 'git'
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', offline)
+    return overrides
+
+
+@pytest.fixture
+def release(tmp_path, systemd_metadata):
     source = tmp_path / 'source'
     (source / 'deploy').mkdir(parents=True)
     (source / 'deploy/cold.json').write_text(json.dumps(INVENTORY))
@@ -82,3 +103,16 @@ def test_owner_no_longer_versions_legacy_scheduler():
     root = Path(__file__).parents[1]
     assert not (root / 'deploy/systemd/bybit-sync-docker.service').exists()
     assert not (root / 'deploy/systemd/bybit-sync-docker.timer').exists()
+
+
+@pytest.mark.parametrize('change', [dict(FragmentPath='/usr/lib/systemd/system/other.service'),
+    dict(DropInPaths='/etc/systemd/system/bybit-cold.service.d/override.conf'),
+    dict(NeedDaemonReload='yes')])
+def test_drift_checks_loaded_fragment_dropins_and_reload(release, tmp_path, systemd_metadata, change):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    systemd_metadata['bybit-cold.service'] = change
+    result = drift(release, units)
+    assert result['outcome'] == 'failure'
+    assert result['mismatches'] == ['bybit-cold.service']
