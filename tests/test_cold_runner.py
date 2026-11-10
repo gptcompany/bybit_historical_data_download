@@ -122,3 +122,14 @@ def test_missing_or_invalid_child_summary_fails_closed(docker_calls, monkeypatch
     assert result["counts_status"] == "unknown" and result["error"] == "InvalidRunSummary"
     assert all(result[key] is None for key in ("downloaded", "skipped", "records"))
     assert "rejected" not in captured.out + captured.err
+
+
+def test_missing_docker_binary_is_not_zero_progress(docker_calls, monkeypatch, capsys):
+    def unavailable(command, **kwargs):
+        raise FileNotFoundError('docker')
+    monkeypatch.setattr(deploy.subprocess, 'run', unavailable)
+    assert deploy.main(['run', '/release']) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result['counts_status'] == 'not_started' and result['error'] == 'ContainerNotStarted'
+    assert result['image'] == CONFIG['image']
+    assert all(result[key] is None for key in ('downloaded', 'skipped', 'records'))
