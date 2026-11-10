@@ -38,7 +38,7 @@ def test_container_validation_and_corruption(tmp_path, kind):
         validate(path, job)
 
 
-@pytest.mark.parametrize("defect", ["day", "symbol", "duplicate", "gap", "number"])
+@pytest.mark.parametrize("defect", ["day", "symbol", "duplicate", "gap", "number", "price-text", "timestamp-text"])
 def test_trade_counterexamples(tmp_path, defect):
     job, path = archive(tmp_path)
     rows = gzip.decompress(path.read_bytes()).decode().splitlines()
@@ -47,6 +47,8 @@ def test_trade_counterexamples(tmp_path, defect):
     if defect == "duplicate": rows[-1] = rows[-1].replace(",1439,", ",0,")
     if defect == "gap": rows.pop(50)
     if defect == "number": rows[-1] = rows[-1].replace(",Buy,1,2,", ",Buy,NaN,2,")
+    if defect == "price-text": rows[-1] = rows[-1].replace(",Buy,1,2,", ",Buy,1,x,")
+    if defect == "timestamp-text": rows[-1] = "x" + rows[-1][1:]
     path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode()))
     with pytest.raises(ValueError): validate(path, job)
 
@@ -144,3 +146,42 @@ def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
     logs = [json.loads(line) for line in (root / "logs/backfill.jsonl").read_text().splitlines()]
     assert logs[-1]["skipped"] == 0 and logs[-1]["downloaded"] == 1
     assert logs[-1]["quarantined"][0]["reason"]
+
+
+@pytest.mark.parametrize("field", ["price", "timestamp"])
+def test_numeric_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
+    job, fixture = archive(tmp_path)
+    original = fixture.read_bytes()
+    rows = gzip.decompress(original).decode().splitlines()
+    malformed = None
+    for index in range(1, len(rows)):
+        changed = rows.copy()
+        changed[index] = (changed[index].replace(",Buy,1,2,", ",Buy,1,x,") if field == "price"
+                          else "x" + changed[index][1:])
+        candidate = gzip.compress(("\n".join(changed) + "\n").encode(), mtime=0)
+        if len(candidate) == len(original):
+            malformed = candidate
+            break
+    assert malformed is not None, "Fixture must reach numeric parsing with matching archive size"
+    calls = []
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(200, content=original)
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        execute([job], root, client)
+        target = root / job["path"]
+        manifest = target.with_suffix(target.suffix + ".manifest.json")
+        target.write_bytes(malformed)
+        saved = json.loads(manifest.read_text())
+        saved["sha256"] = hashlib.sha256(malformed).hexdigest()
+        manifest.write_text(json.dumps(saved))
+        rejected_manifest = manifest.read_bytes()
+        execute([job], root, client)
+    assert calls == ["GET", "GET"] and target.read_bytes() == original
+    assert any(p.read_bytes() == malformed for p in target.parent.glob("day.gz.quarantine.*"))
+    assert any(p.read_bytes() == rejected_manifest for p in target.parent.glob("*.manifest.json.quarantine.*"))
+    log = json.loads((root / "logs/backfill.jsonl").read_text().splitlines()[-1])
+    assert (log["outcome"], log["downloaded"], log["skipped"], log["records"]) == ("success", 1, 0, 1440)
+    assert log["quarantined"][0]["reason"] == "invalid-cached-records"
+    assert log["quarantined"][0]["error"] == "ValueError"
