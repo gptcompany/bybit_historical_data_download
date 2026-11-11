@@ -150,3 +150,79 @@ def test_runner_forwards_retry_from_existing_summary(tmp_path, monkeypatch, caps
     assert result["outcome"] == "success"
     assert json.loads(capsys.readouterr().err) == event
     assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == event
+
+
+@pytest.fixture
+def retry_child(tmp_path, monkeypatch):
+    events = [dict(event="retry", target="historical/trade/contract/BTCUSDT/file.csv.gz",
+                   attempt=attempt, exception="ReadTimeout", wait_seconds=1.0) for attempt in (1, 2)]
+    child = SimpleNamespace(returncode=0, stdout="", stderr="\n".join(map(json.dumps, events)))
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "load_release", lambda *args:
+                        {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
+    monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs: child)
+    return child, events
+
+
+@pytest.mark.parametrize("operation", ["mkdir", "open", "write", "flush", "fsync"])
+@pytest.mark.parametrize("child_failed", [False, True])
+def test_host_retry_log_failure_preserves_child(retry_child, tmp_path, monkeypatch, capsys,
+                                                operation, child_failed):
+    from unittest.mock import MagicMock
+
+    child, events = retry_child
+    summary = json.loads((Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text())
+    summary.update(retries=2, files=2, skipped=1)
+    if child_failed:
+        summary.update(outcome="failure", log_error="OSError", error="ReadTimeout")
+        child.returncode = 1
+    child.stdout = json.dumps(summary)
+    failure = OSError(errno.ENOSPC, "No space left on device")
+    stream = MagicMock()
+    stream.__enter__.return_value = stream
+    if operation in {"write", "flush"}:
+        getattr(stream, operation).side_effect = failure
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: stream)
+    if operation in {"mkdir", "open"}:
+        def fail(*args, **kwargs):
+            raise failure
+        monkeypatch.setattr(Path, operation, fail)
+    monkeypatch.setattr(deploy.os, "fsync", MagicMock(side_effect=failure if operation == "fsync" else None))
+
+    assert deploy.main(["backfill", str(tmp_path), "--start-date", "2026-11-09",
+                        "--end-date", "2026-11-09"]) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["phase"] == "execution"
+    for field in ("downloaded", "skipped", "records", "retries", "started_at", "finished_at"):
+        assert result[field] == summary[field]
+    assert result["outcome"] == "failure"
+    assert result["log_error"] == "OSError"
+    assert result["counts_status"] == "reported"
+    assert result["returncode"] == child.returncode
+    assert result["image"] == "fixture" and result["image_source_sha"] == "b" * 40
+    if child_failed:
+        assert result["error"] == "ReadTimeout"
+    assert [json.loads(line) for line in captured.err.splitlines()] == events
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("output", [b"", b"not JSON", b'{"unexpected": true}'])
+def test_interrupted_child_keeps_valid_retry_events(retry_child, tmp_path, capsys, dry_run, output):
+    child, events = retry_child
+    child.returncode, child.stdout = 137, output
+    child.stderr = (child.stderr + "\nnoise\n" + json.dumps(dict(events[0], extra="reject"))).encode()
+    args = ["backfill", str(tmp_path), "--start-date", "2026-11-09", "--end-date", "2026-11-09"]
+    assert deploy.main(args + (["--dry-run"] if dry_run else [])) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["error"] == "InvalidRunSummary" and result["counts_status"] == "unknown"
+    assert result["phase"] == "container" and result["returncode"] == 137
+    assert all(result[field] is None for field in ("downloaded", "skipped", "records"))
+    assert [json.loads(line) for line in captured.err.splitlines()] == events
+    log = tmp_path / "logs/backfill.jsonl"
+    if dry_run:
+        assert not log.exists()
+    else:
+        assert [json.loads(line) for line in log.read_text().splitlines()] == events
