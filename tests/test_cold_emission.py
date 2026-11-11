@@ -19,7 +19,17 @@ MODULES = ["scripts/cold_deploy.py"] + [
     "src/bybit_data_downloader/" + name + ".py"
     for name in ("backfill", "backfill_execute", "backfill_retry")]
 # Data, manifest, lock and unit I/O are outside the logging contract.
-DATA_IO = {"_install", "_validate", "digest", "download_file", "execute", "publish_orderbook_day", "scan"}
+DATA_IO = {
+    "_install": {"stream.write(text)", "stream.flush()", "os.fsync(stream.fileno())"},
+    "_validate": {"gzip.open(path, 'rt', newline='')", "archive.open(names[0])"},
+    "digest": {"path.open('rb')"},
+    "publish_orderbook_day": {"filtered.flush()", "os.fsync(filtered.fileno())", "source.open(member)",
+                              "output.open(member, 'w', force_zip64=True)"},
+    "download_file": {"stream.flush()", "os.fsync(stream.fileno())", "stream.write(chunk)",
+                      "stream.write(json.dumps(api_rows(client, job)).encode())"},
+    "execute": {"root.mkdir(parents=True, exist_ok=True)", "(root / '.backfill.lock').open('a')",
+                "target.parent.mkdir(parents=True, exist_ok=True)", "stream.flush()", "os.fsync(stream.fileno())"},
+}
 OUTPUT = {"print", "open", "write", "write_text", "write_bytes", "flush", "fsync", "mkdir"}
 
 
@@ -32,7 +42,7 @@ def direct_output(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-            if name in OUTPUT and (name == "print" or function.name not in DATA_IO):
+            if name in OUTPUT and ast.unparse(node) not in DATA_IO.get(function.name, set()):
                 violations.append((function.name, node.lineno, name))
     return violations
 
@@ -46,7 +56,8 @@ def test_cold_output_only_through_emitter(module):
 @pytest.mark.parametrize("statement", ["print(event)", "sys.stderr.write(event)",
                                        "log.open('a')", "stream.flush()", "os.fsync(fd)"])
 def test_ast_gate_rejects_direct_output(statement):
-    assert direct_output(ast.parse("def new_cold_step():\n    " + statement))
+    for name in ("new_cold_step", "execute"):
+        assert direct_output(ast.parse("def " + name + "():\n    " + statement))
 
 
 @pytest.mark.parametrize("operation", ["mkdir", "open", "write", "flush", "fsync", "close"])
