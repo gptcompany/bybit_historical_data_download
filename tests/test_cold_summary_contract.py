@@ -69,6 +69,7 @@ def test_child_output_contract(scenario, tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(("field", "value"), [
+    ("retries", -1), ("retries", "1"), ("retries", True),
     ("discarded_orderbook_tail", -1), ("discarded_orderbook_tail", "0"),
     ("discarded_orderbook_tail", True), ("error_message", 123),
     ("error_type", "unknown"), ("error_day", "invalid"),
@@ -131,3 +132,21 @@ def test_retry_events_cross_runner_boundary(scenario, tmp_path, monkeypatch, cap
     else:
         records = [json.loads(line) for line in log.read_text().splitlines()]
         assert [row for row in records if row.get("event") == "retry"] == events
+
+
+def test_runner_forwards_retry_from_existing_summary(tmp_path, monkeypatch, capsys):
+    from datetime import date
+
+    output = (Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text()
+    event = dict(event="retry", target="historical/trade/contract/BTCUSDT/file.csv.gz",
+                 attempt=1, exception="ReadTimeout", wait_seconds=1.0)
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "load_release", lambda *args:
+                        {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
+    monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout=output, stderr=json.dumps(event) + "\nnoise"))
+    result = deploy.run_backfill(tmp_path, date(2026, 11, 9), date(2026, 11, 9))
+    assert result["outcome"] == "success"
+    assert json.loads(capsys.readouterr().err) == event
+    assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == event
