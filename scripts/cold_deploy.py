@@ -215,6 +215,7 @@ class RunSummary(ClosedRecord):
     phase: Literal['planning', 'execution']
     discarded_orderbook_tail: Count = 0
     retries: Count = 0
+    events_not_written: Count = 0
     error: str | None = None
     error_message: str | None = None
     error_type: Literal['trade', 'orderbook', 'klines', 'funding', 'openinterest', 'longshortratio'] | None = None
@@ -248,7 +249,10 @@ class PlanJob(ClosedRecord):
 
 
 class PlanSummary(ClosedRecord):
+    outcome: Literal['success', 'failure'] = 'success'
+    log_error: str | None = None
     retries: Count = 0
+    events_not_written: Count = 0
     days: Annotated[int, Field(gt=0)]
     files: Count
     archive_bytes: Count
@@ -273,28 +277,43 @@ class RetryEvent(ClosedRecord):
     wait_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
-def forward_retries(stderr, config, dry_run):
-    log_error = None
-    for line in stderr.splitlines():
-        try:
-            event = RetryEvent.model_validate_json(line).model_dump_json()
-        except ValueError:
+def emit(payload, state, *, stream=None, log=None, event=False):
+    """Best effort per sink; retain the first I/O error without changing work counters."""
+    delivered = False
+    state.setdefault('events_not_written', 0)
+    for sink in ('file', 'stream'):
+        if (sink == 'file' and log is None) or (sink == 'stream' and stream is None):
             continue
         try:
-            print(event, file=sys.stderr, flush=True)
-        except OSError as error:
-            log_error = log_error or type(error).__name__
-        if not dry_run:
-            try:
-                log = Path(config['cold_root']) / 'logs/backfill.jsonl'
+            if sink == 'file':
                 log.parent.mkdir(parents=True, exist_ok=True)
-                with log.open('a') as stream:
-                    stream.write(event + '\n')
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except OSError as error:
-                log_error = log_error or type(error).__name__
-    return log_error
+                with log.open('a') as output:
+                    output.write(json.dumps(payload) + '\n')
+                    output.flush()
+                    os.fsync(output.fileno())
+            else:
+                print(json.dumps(payload), file=stream, flush=True)
+            delivered = True
+        except OSError as error:  # Includes BrokenPipeError; always attempt the other sink.
+            state['log_error'] = state.get('log_error') or type(error).__name__
+            if state.get('outcome') == 'success' and 'phase' in state:
+                state.update(error=type(error).__name__, error_target=None,
+                             error_message=os.strerror(error.errno) if error.errno else 'Log emission failed')
+            state['outcome'] = 'failure'
+    if event and not delivered:
+        state['events_not_written'] += 1
+
+
+def forward_retries(stderr, config, dry_run):
+    state = dict(events_not_written=0)
+    for line in stderr.splitlines():
+        try:
+            event = RetryEvent.model_validate_json(line).model_dump(mode='json')
+        except ValueError:
+            continue
+        emit(event, state, stream=sys.stderr, event=True,
+             log=None if dry_run else Path(config['cold_root']) / 'logs/backfill.jsonl')
+    return state
 
 
 def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
@@ -317,18 +336,26 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     unknown['returncode'] = completed.returncode
     if completed.returncode in (125, 126, 127):
         return dict(unknown, counts_status='not_started', error='ContainerNotStarted')
-    log_error = forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
-    log_failure = dict(outcome='failure', log_error=log_error) if log_error else {}
+    emission = forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
+    log_failure = dict(outcome='failure', log_error=emission['log_error']) if emission.get('log_error') else {}
     try:
-        if dry_run and completed.returncode == 0:
-            plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
-            return dict(plan, **metadata, outcome='success', phase='planning') | log_failure
-        RunSummary.model_validate_json(completed.stdout)
+        if dry_run:
+            try:
+                PlanSummary.model_validate_json(completed.stdout)
+            except ValueError:
+                RunSummary.model_validate_json(completed.stdout)
+        else:
+            RunSummary.model_validate_json(completed.stdout)
         summary = json.loads(completed.stdout)  # Preserve the validated child's timestamp spelling.
+        summary.setdefault('outcome', 'success')
+        summary.setdefault('phase', 'planning')
         if (completed.returncode == 0) != (summary['outcome'] == 'success'):
             raise ValueError('Child exit status contradicts summary')
     except ValueError:
-        return dict(unknown, counts_status='unknown', error='InvalidRunSummary') | log_failure
+        return dict(unknown, counts_status='unknown', error='InvalidRunSummary', **emission) | log_failure
+    summary['events_not_written'] = summary.get('events_not_written', 0) + emission['events_not_written']
+    if log_failure and summary.get('log_error'):
+        log_failure['log_error'] = summary['log_error']
     return dict(summary, **metadata, counts_status='reported') | log_failure
 
 
@@ -358,7 +385,7 @@ def main(argv=None):
     except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
                       phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
-    print(json.dumps(result), flush=True)
+    emit(result, result, stream=sys.stdout)
     return int(result['outcome'] != 'success')
 
 

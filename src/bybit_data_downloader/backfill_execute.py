@@ -7,6 +7,7 @@ import io
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import zipfile
 import zlib
@@ -20,6 +21,7 @@ import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
 from .backfill_retry import RetryPolicy
+from scripts.cold_deploy import emit
 
 DAY = 86400000
 ORDERBOOK_TAIL_V1_MS = 1000
@@ -212,7 +214,7 @@ def digest(path):
 
 def run_stats(jobs):
     return dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
-                discarded_orderbook_tail=0, retries=0,
+                discarded_orderbook_tail=0, retries=0, events_not_written=0,
                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
 
 
@@ -246,20 +248,11 @@ def record_failure(stats, error, job):
 def write_run_log(stats, root):
     """Journal survives unavailable cold storage; persistence errors still fail the run."""
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
-    try:
-        if root is None:  # Dry-run diagnostics must never create files.
-            return
-        logs = Path(root) / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        with (logs / "backfill.jsonl").open("a") as stream:
-            stream.write(json.dumps(stats) + "\n"); stream.flush(); os.fsync(stream.fileno())
-    except OSError as error:
-        if stats["outcome"] == "success":
-            record_failure(stats, error, {})
-        stats["log_error"] = type(error).__name__
-        raise
-    finally:
-        print(json.dumps(stats), flush=True)
+    if stats.get("log_error"):
+        stats["outcome"] = "failure"
+    emit(stats, stats, stream=sys.stdout, log=None if root is None else Path(root) / "logs/backfill.jsonl")
+    if stats.get("log_error"):
+        raise OSError("Log emission failed")
 
 
 def download_file(client, job, target):
@@ -282,9 +275,9 @@ def download_file(client, job, target):
     return count, discarded
 
 
-def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0):
+def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0, planning_emission=None):
     stats = run_stats(jobs)
-    stats.update(phase="execution", retries=planning_retries)
+    stats.update(phase="execution", retries=planning_retries, **(planning_emission or {}))
     job = {}
     try:
         root = Path(root).resolve()
@@ -326,7 +319,8 @@ def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0):
                                                         else type(error).__name__))
                 if count is None:
                     count, discarded = retry.run(lambda: download_file(client, job, target), job["path"],
-                                                 on_retry=lambda _: stats.update(retries=stats["retries"] + 1))
+                                                 on_retry=lambda _: stats.update(retries=stats["retries"] + 1),
+                                                 emission_state=stats)
                     stats["discarded_orderbook_tail"] += discarded
                     stats["downloaded"] += 1
                 else: stats["skipped"] += 1
