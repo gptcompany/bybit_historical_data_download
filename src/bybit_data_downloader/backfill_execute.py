@@ -224,7 +224,7 @@ def digest(path):
 
 def run_stats(jobs):
     return dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
-                discarded_orderbook_tail=0,
+                discarded_orderbook_tail=0, retries=0,
                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
 
 
@@ -295,10 +295,10 @@ def download_file(client, job, target, *, orderbook_tail_max_ms=ORDERBOOK_TAIL_M
     return count, discarded
 
 
-def execute(jobs, root, client, *, retry=RetryPolicy(), orderbook_tail_max_ms=ORDERBOOK_TAIL_MAX_MS):
-
+def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0,
+            orderbook_tail_max_ms=ORDERBOOK_TAIL_MAX_MS):
     stats = run_stats(jobs)
-    stats["phase"] = "execution"
+    stats.update(phase="execution", retries=planning_retries)
     job = {}
     try:
         Draft202012Validator({"type": "integer", "minimum": 1, "maximum": DAY - 1}).validate(orderbook_tail_max_ms)
@@ -342,7 +342,7 @@ def execute(jobs, root, client, *, retry=RetryPolicy(), orderbook_tail_max_ms=OR
                 if count is None:
                     count, discarded = retry.run(
                         lambda: download_file(client, job, target, orderbook_tail_max_ms=orderbook_tail_max_ms),
-                        job["path"])
+                        job["path"], on_retry=lambda _: stats.update(retries=stats["retries"] + 1))
                     stats["discarded_orderbook_tail"] += discarded
                     stats["downloaded"] += 1
                 else: stats["skipped"] += 1

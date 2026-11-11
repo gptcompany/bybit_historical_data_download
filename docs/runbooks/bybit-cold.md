@@ -170,3 +170,17 @@ Prova: CI con MockTransport, senza rete reale; 404 caratterizzato prima della
 regressione RED, poi successo/esaurimento per HEAD e GET, stream parziale,
 Retry-After e riavvio della paginazione senza duplicati. Serve rebuild immagine:
 build e PR manifest spettano a B5; nessuna attivazione in questa modifica.
+
+
+Il riepilogo `retries` conta i tentativi aggiuntivi dell'intero run, inclusa
+la pianificazione. Il runner host valida gli eventi `retry` con schema chiuso
+(`event`, `target`, `attempt`, `exception`, `wait_seconds`), li inoltra su stderr
+per il journal e li aggiunge a `logs/backfill.jsonl`; scarta ogni altro testo
+stderr del container. Il dry-run inoltra gli eventi senza scrivere il log.
+L'inoltro avviene al termine del container, perché il runner ne cattura l'output.
+I riepiloghi delle immagini precedenti restano validi con contatore assente.
+Gli eventi validi vengono inoltrati anche se manca il riepilogo finale del
+container: l'esito resta `InvalidRunSummary`, con conteggi unknown/null.
+Un errore di persistenza host imposta failure e `log_error`, conserva fase,
+conteggi e metadati del riepilogo validato e lascia proseguire tutti gli eventi
+verso il journal.

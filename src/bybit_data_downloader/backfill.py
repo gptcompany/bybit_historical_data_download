@@ -16,7 +16,7 @@ INTERVALS = {"1m": 1, "5m": 5, "15m": 15}
 API = "https://api.bybit.com/v5/market/"
 
 
-def plan(start, end, symbols, types, intervals, client, *, active_job=None, retry=RetryPolicy()):
+def plan(start, end, symbols, types, intervals, client, *, active_job=None, retry=RetryPolicy(), on_retry=None):
     """Return one deterministic output per UTC day/series, with archive HEAD sizes."""
     if start > end or end >= datetime.now(timezone.utc).date():
         raise BackfillDataError("Require an ordered range of closed UTC days")
@@ -56,7 +56,7 @@ def plan(start, end, symbols, types, intervals, client, *, active_job=None, retr
                             response = client.head(job["url"])
                             response.raise_for_status()
                             return response
-                        response = retry.run(head, job["path"])
+                        response = retry.run(head, job["path"], on_retry=on_retry)
                         try:
                             size = int(response.headers.get("Content-Length", "0"))
                         except ValueError:
@@ -93,19 +93,20 @@ def main(argv=None):
         planning.update(phase="planning", start_date=args.start_date.isoformat(), end_date=args.end_date.isoformat())
         try:
             jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
-                        args.types.split(","), args.intervals.split(","), client, active_job=active_job, retry=retry)
+                        args.types.split(","), args.intervals.split(","), client, active_job=active_job, retry=retry,
+                        on_retry=lambda _: planning.update(retries=planning["retries"] + 1))
         except Exception as error:
             record_failure(planning, error, active_job)
             write_run_log(planning, None if args.dry_run else args.data_root)
             raise
         if not args.dry_run:
-            execute(jobs, args.data_root, client, retry=retry,
+            execute(jobs, args.data_root, client, retry=retry, planning_retries=planning["retries"],
                     orderbook_tail_max_ms=args.orderbook_tail_max_ms)
             return
     print(json.dumps({"days": (args.end_date - args.start_date).days + 1,
                       "files": len(jobs), "archive_bytes": sum(j["expected_bytes"] or 0 for j in jobs),
                       "api_files_unknown_bytes": sum(j["source"] == "api" for j in jobs),
-                      "data_root": args.data_root, "jobs": jobs}, indent=2))
+                      "data_root": args.data_root, "jobs": jobs, "retries": planning["retries"]}, indent=2))
 
 
 if __name__ == "__main__":

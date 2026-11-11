@@ -75,7 +75,7 @@ def test_cli_passes_orderbook_tail_limit(tmp_path, monkeypatch, limit):
     if limit is not None:
         args += ["--orderbook-tail-max-ms", str(limit)]
     main(args)
-    assert received == [{"retry": backfill.RetryPolicy(),
+    assert received == [{"retry": backfill.RetryPolicy(), "planning_retries": 0,
                          "orderbook_tail_max_ms": 60000 if limit is None else limit}]
 
 
