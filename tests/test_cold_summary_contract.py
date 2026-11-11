@@ -226,3 +226,42 @@ def test_interrupted_child_keeps_valid_retry_events(retry_child, tmp_path, capsy
         assert not log.exists()
     else:
         assert [json.loads(line) for line in log.read_text().splitlines()] == events
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+@pytest.mark.parametrize("child_state", ["success", "failure", "missing", "dry_missing"])
+def test_host_stderr_failure_keeps_summary_and_file(retry_child, tmp_path, monkeypatch, capsys,
+                                                   operation, child_state):
+    from unittest.mock import MagicMock
+    import sys
+
+    child, events = retry_child
+    summary = json.loads((Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text())
+    summary.update(retries=2, files=2, skipped=1)
+    if child_state == "failure":
+        summary.update(outcome="failure", error="ReadTimeout")
+    child.returncode = 137 if "missing" in child_state else int(child_state == "failure")
+    child.stdout = "" if "missing" in child_state else json.dumps(summary)
+    stream = MagicMock()
+    getattr(stream, operation).side_effect = BrokenPipeError(errno.EPIPE, "closed pipe")
+    monkeypatch.setattr(sys, "stderr", stream)
+    args = ["backfill", str(tmp_path), "--start-date", "2026-11-09", "--end-date", "2026-11-09"]
+    assert deploy.main(args + (["--dry-run"] if child_state == "dry_missing" else [])) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["log_error"] == "BrokenPipeError"
+    assert result["returncode"] == child.returncode and result["image"] == "fixture"
+    if "missing" in child_state:
+        assert result["phase"] == "container" and result["counts_status"] == "unknown"
+        assert all(result[field] is None for field in ("downloaded", "skipped", "records"))
+    else:
+        assert result["phase"] == "execution" and result["counts_status"] == "reported"
+        for field in ("downloaded", "skipped", "records", "retries", "started_at", "finished_at"):
+            assert result[field] == summary[field]
+        if child_state == "failure":
+            assert result["error"] == "ReadTimeout"
+    log = tmp_path / "logs/backfill.jsonl"
+    if child_state == "dry_missing":
+        assert not log.exists()
+    else:
+        assert [json.loads(line) for line in log.read_text().splitlines()] == events
+    assert stream.write.call_count >= len(events)
