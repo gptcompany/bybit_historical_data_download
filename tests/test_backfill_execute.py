@@ -1,7 +1,11 @@
+import csv
 import gzip
+import io
 import hashlib
 import json
 import zipfile
+from pathlib import Path
+from decimal import Decimal
 from datetime import datetime, timezone
 
 import httpx
@@ -36,6 +40,50 @@ def test_container_validation_and_corruption(tmp_path, kind):
     path.write_bytes(path.read_bytes()[:-8])
     with pytest.raises((ValueError, EOFError, OSError, zipfile.BadZipFile)):
         validate(path, job)
+
+
+@pytest.mark.parametrize(("day", "change", "error"), [
+    ("2025-04-02", None, None),
+    ("2025-04-03", None, None),
+    ("2025-04-03", "invalid-value", "Invalid trade RPI"),
+    ("2025-04-03", "missing-value", "Malformed CSV row"),
+    ("2025-04-03", "renamed-header", "Unexpected trade schema"),
+    ("2025-04-03", "reordered-header", "Unexpected trade schema"),
+    ("2025-04-03", "extra-header", "Unexpected trade schema"),
+])
+def test_versioned_trade_headers(tmp_path, day, change, error):
+    fixture = Path(__file__).parent / "fixtures" / f"btc-trades-{day}.csv"
+    with fixture.open(newline="") as stream:
+        fields, sample = csv.reader(stream)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    if change == "renamed-header":
+        fields[-1] = "rpi"
+    elif change == "reordered-header":
+        fields[-2:] = reversed(fields[-2:])
+    elif change == "extra-header":
+        fields.append("extra")
+    writer.writerow(fields)
+    writer.writerow(sample)
+    for minute in range(1, 1440):
+        row = sample.copy()
+        row[0] = str(Decimal(sample[0]) + 60 * minute)
+        row[6] = str(minute)
+        if day == "2025-04-03":
+            row[-1] = str(minute % 2)
+        if minute == 1439 and change == "invalid-value":
+            row[-1] = "2"
+        if minute == 1439 and change == "missing-value":
+            row.pop()
+        writer.writerow(row)
+    path = tmp_path / "trade.csv.gz"
+    path.write_bytes(gzip.compress(output.getvalue().encode()))
+    job = dict(day=day, symbol="BTCUSDT", type="trade", source="archive")
+    if error:
+        with pytest.raises(ValueError, match=error):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
 
 
 @pytest.mark.parametrize("defect", ["day", "symbol", "duplicate", "gap", "number", "price-text", "timestamp-text"])

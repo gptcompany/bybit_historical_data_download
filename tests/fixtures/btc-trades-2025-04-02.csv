@@ -1,0 +1,2 @@
+timestamp,symbol,side,size,price,tickDirection,trdMatchID,grossValue,homeNotional,foreignNotional
+1743552000.1571,BTCUSDT,Sell,0.25,85130.50,ZeroMinusTick,2a24fb03-7d23-52ad-89f9-d3da66dc6847,2.1282625e+12,0.25,21282.625

@@ -1,0 +1,2 @@
+timestamp,symbol,side,size,price,tickDirection,trdMatchID,grossValue,homeNotional,foreignNotional,RPI
+1743638400.0645,BTCUSDT,Buy,0.051,82468.10,ZeroMinusTick,31fad51d-d6b3-53aa-a9e4-3047961a81f0,4.2058731e+11,0.051,4205.8731,0
