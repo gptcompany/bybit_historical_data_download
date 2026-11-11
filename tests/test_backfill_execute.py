@@ -237,8 +237,11 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     assert log["quarantined"][0]["error"] == "ValueError"
 
 
-@pytest.mark.parametrize("defect", [None, "early", "nonterminal", "late", "missing-minute"])
-def test_orderbook_midnight_tail(tmp_path, defect):
+@pytest.mark.parametrize(("defect", "separator"), [
+    (None, "\n"), (None, "\r\n"), (None, "\r"), (None, "mixed"),
+    ("early", "\n"), ("nonterminal", "\n"), ("late", "\n"), ("missing-minute", "\n"),
+])
+def test_orderbook_midnight_tail(tmp_path, defect, separator):
     fixture = Path(__file__).parent / "fixtures/btc-ob200-2026-06-29.jsonl"
     first, last, *tail = map(json.loads, fixture.read_text().splitlines())
     start = 1782691200000
@@ -254,7 +257,10 @@ def test_orderbook_midnight_tail(tmp_path, defect):
     path = tmp_path / "fixture.zip"
     member = "2026-06-29_BTCUSDT_ob200.data"
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
-        stream.writestr(member, "".join(json.dumps(row) + "\n" for row in rows + tail))
+        stream.writestr(member, "".join(
+            json.dumps(row) + ("\r" if index == len(rows) - 1 else "\n")
+            if separator == "mixed" else json.dumps(row) + separator
+            for index, row in enumerate(rows + tail)))
     job = dict(day="2026-06-29", symbol="BTCUSDT", type="orderbook", source="archive",
                path="historical/orderbook/day.zip", url="https://example.test/day",
                expected_bytes=path.stat().st_size)
@@ -283,3 +289,40 @@ def test_orderbook_midnight_tail(tmp_path, defect):
     assert [log["discarded_orderbook_tail"] for log in logs] == [8, 0]
     assert [log["records"] for log in logs] == [1440, 1440]
     assert logs[1]["skipped"] == 1
+
+
+@pytest.mark.parametrize("failure", ["invalid-records", "count-mismatch"])
+def test_orderbook_rewrite_validated_before_publication(tmp_path, monkeypatch, failure):
+    from bybit_data_downloader import backfill_execute as module
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = dict(type="delta", ts=START + 86400000, data=dict(
+        s="BTCUSDT", b=[], a=[], u=1440, seq=1440))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + json.dumps(tail).encode())
+    job["expected_bytes"] = path.stat().st_size
+    checked = []
+
+    def reject_rewrite(candidate, candidate_job):
+        checked.append(candidate)
+        assert candidate_job == job
+        assert not (root / job["path"]).exists()
+        assert validate(candidate, candidate_job) == 1440
+        if failure == "invalid-records":
+            raise module.BackfillDataError("Rejected rewritten archive")
+        return 1439
+
+    monkeypatch.setattr(module, "validate", reject_rewrite)
+    root = tmp_path / "cold"
+    reason = "Rejected rewritten archive" if failure == "invalid-records" else "Record count mismatch"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        with pytest.raises(ValueError, match=reason):
+            execute([job], root, client)
+    assert len(checked) == 1
+    assert not checked[0].exists()
+    assert not (root / job["path"]).exists()
+    assert not list(root.rglob("*.manifest.json"))
+    assert not list(root.rglob("*.part"))
