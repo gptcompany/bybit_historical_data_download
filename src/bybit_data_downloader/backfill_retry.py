@@ -22,7 +22,7 @@ class RetryPolicy:
         if self.attempts < 1 or any(not math.isfinite(v) or v < 0 for v in (self.base_delay, self.max_delay)):
             raise ValueError("Retry attempts must be positive and delays finite and nonnegative")
 
-    def run(self, operation, target):
+    def run(self, operation, target, *, on_retry=None):
         ceiling = min(self.base_delay, self.max_delay)
         for attempt in range(1, self.attempts + 1):
             try:
@@ -45,7 +45,10 @@ class RetryPolicy:
                             wait = max(wait, minimum)
                     except (ValueError, TypeError, OverflowError):
                         pass  # Invalid upstream metadata does not suppress the bounded retry.
-                print(json.dumps(dict(event="retry", target=target, attempt=attempt,
-                                      exception=type(error).__name__, wait_seconds=wait)), file=sys.stderr, flush=True)
+                event = dict(event="retry", target=target, attempt=attempt,
+                             exception=type(error).__name__, wait_seconds=wait)
+                if on_retry is not None:
+                    on_retry(event)
+                print(json.dumps(event), file=sys.stderr, flush=True)
                 time.sleep(wait)
                 ceiling = min(self.max_delay, ceiling * 2)
