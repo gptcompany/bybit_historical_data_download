@@ -280,7 +280,10 @@ def forward_retries(stderr, config, dry_run):
             event = RetryEvent.model_validate_json(line).model_dump_json()
         except ValueError:
             continue
-        print(event, file=sys.stderr, flush=True)
+        try:
+            print(event, file=sys.stderr, flush=True)
+        except OSError as error:
+            log_error = log_error or type(error).__name__
         if not dry_run:
             try:
                 log = Path(config['cold_root']) / 'logs/backfill.jsonl'
@@ -290,7 +293,7 @@ def forward_retries(stderr, config, dry_run):
                     stream.flush()
                     os.fsync(stream.fileno())
             except OSError as error:
-                log_error = type(error).__name__
+                log_error = log_error or type(error).__name__
     return log_error
 
 
