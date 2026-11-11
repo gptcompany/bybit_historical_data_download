@@ -155,3 +155,17 @@ def test_non_utf8_container_streams_preserve_progress(docker_calls, monkeypatch,
     else:
         assert result["counts_status"] == "unknown" and result["phase"] == "container"
         assert all(result[key] is None for key in ("downloaded", "skipped", "records"))
+
+
+def test_dell_trade_summary_preserves_observed_progress(docker_calls, monkeypatch, capsys):
+    # Dell bbbd0c6, 2026-11-11 02:21 UTC: observed counts/day; timestamps reconstructed.
+    from pathlib import Path
+    child = json.loads((Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text())
+    monkeypatch.setattr(deploy.subprocess, "run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=0, stdout=json.dumps(child), stderr=""))
+    assert deploy.main(["backfill", "/release", "--start-date", "2026-06-30",
+                        "--end-date", "2026-06-30", "--symbols", "BTCUSDT", "--types", "trade"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["counts_status"] == "reported"
+    for key, value in child.items():
+        assert result[key] == value

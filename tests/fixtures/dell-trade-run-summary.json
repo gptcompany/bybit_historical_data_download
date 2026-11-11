@@ -1,0 +1,16 @@
+{
+  "outcome": "success",
+  "downloaded": 1,
+  "skipped": 0,
+  "records": 2651099,
+  "files": 1,
+  "quarantined": [],
+  "timezone": "UTC",
+  "discarded_orderbook_tail": 0,
+  "started_at": "2026-11-11T02:20:00+00:00",
+  "finished_at": "2026-11-11T02:21:00+00:00",
+  "days": [
+    "2026-06-30"
+  ],
+  "phase": "execution"
+}
