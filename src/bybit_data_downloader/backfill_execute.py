@@ -108,7 +108,7 @@ def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
                 max_offset = max(max_offset, timestamp - end)
                 tail_start = tail_start or position
                 tail_rows += 1
-            if (timestamp < start or timestamp < previous
+            if (timestamp < start or timestamp >= end + DAY or timestamp < previous
                     or (timestamp < end and discarded)
                     or (timestamp >= end and (not tail_allowed or max_offset > orderbook_tail_max_ms))):
                 raise BackfillDataError(
@@ -301,7 +301,7 @@ def execute(jobs, root, client, *, retry=RetryPolicy(), orderbook_tail_max_ms=OR
     stats["phase"] = "execution"
     job = {}
     try:
-        Draft202012Validator({"type": "integer", "minimum": 1}).validate(orderbook_tail_max_ms)
+        Draft202012Validator({"type": "integer", "minimum": 1, "maximum": DAY - 1}).validate(orderbook_tail_max_ms)
         root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         with (root / ".backfill.lock").open("a") as lock:

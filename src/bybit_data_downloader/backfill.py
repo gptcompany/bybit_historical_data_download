@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from .backfill_retry import RetryPolicy
-from .backfill_execute import (ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute,
+from .backfill_execute import (DAY, ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute,
                                record_failure, run_stats, write_run_log)
 
 
@@ -84,8 +84,8 @@ def main(argv=None):
     parser.add_argument("--retry-base-delay", type=float, default=RetryPolicy.base_delay)
     parser.add_argument("--retry-max-delay", type=float, default=RetryPolicy.max_delay)
     args = parser.parse_args(argv)
-    if args.orderbook_tail_max_ms < 1:
-        parser.error("--orderbook-tail-max-ms must be a positive integer")
+    if not 1 <= args.orderbook_tail_max_ms < DAY:
+        parser.error(f"--orderbook-tail-max-ms must be an integer between 1 and {DAY - 1}")
     retry = RetryPolicy(args.retry_attempts, args.retry_base_delay, args.retry_max_delay)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         active_job = {}
