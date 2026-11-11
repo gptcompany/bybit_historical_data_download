@@ -1,8 +1,10 @@
 """Run failures before download must remain observable without archive access."""
+import errno
 import fcntl
 import json
 import runpy
 import sys
+import zipfile
 
 import httpx
 import pytest
@@ -32,6 +34,10 @@ def test_planning_failure_logs_counts_without_get(tmp_path, monkeypatch, capsys)
                        "--symbols", "BTCUSDT", "--types", "trade", "--data-root", str(tmp_path)])
     record = failure_record(capsys)
     assert record["phase"] == "planning" and record["error"] == "HTTPStatusError"
+    assert record["error_message"] == "HTTP status 404"
+    assert (record["error_type"], record["error_day"], record["error_symbol"], record["error_target"]) == (
+        "trade", "2026-11-09", "BTCUSDT", "historical/trade/contract/BTCUSDT/BTCUSDT2026-11-09.csv.gz",
+    )
     assert calls == ["HEAD"]
     assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
 
@@ -43,6 +49,8 @@ def test_busy_lock_logs_failure(tmp_path, capsys):
             with pytest.raises(BlockingIOError): execute([], tmp_path, client)
     record = failure_record(capsys)
     assert record["error"] == "BlockingIOError"
+    assert "temporarily unavailable" in record["error_message"].lower()
+    assert all(record[key] is None for key in ("error_type", "error_day", "error_symbol", "error_target"))
     assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
 
 
@@ -125,3 +133,60 @@ def test_dry_run_failure_reports_reason_without_writes(scenario, tmp_path, monke
     assert record["error"] == ("ValueError" if scenario == "reversed" else "HTTPStatusError")
     assert not root.exists()
     assert calls == ([] if scenario == "reversed" else ["HEAD"])
+
+
+def test_execution_failure_reports_failed_job_without_upstream_values(tmp_path, capsys):
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type="funding", source="api",
+               path="market_metrics/funding/BTCUSDT/2026-11-09.json",
+               url="https://example.test/api?credential=fixture-secret", expected_bytes=None)
+    response = dict(retCode=0, result=dict(list=[dict(
+        symbol="BTCUSDT", fundingRate="fixture-secret", fundingRateTimestamp="1794182400000",
+    )]))
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=response))) as client:
+        with pytest.raises(Exception):
+            execute([job], tmp_path, client)
+    record = failure_record(capsys)
+    assert record["error"] == "ValidationError"
+    assert "pattern" in record["error_message"] and "fundingRate" in record["error_message"]
+    assert (record["error_type"], record["error_day"], record["error_symbol"], record["error_target"]) == (
+        job["type"], job["day"], job["symbol"], job["path"],
+    )
+    assert "fixture-secret" not in json.dumps(record)
+    assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
+
+
+@pytest.mark.parametrize(("error", "message"), [
+    (json.JSONDecodeError("fixture-secret", "fixture-secret", 0), "Invalid JSON at line 1, column 1"),
+    (zipfile.BadZipFile("fixture-secret"), "Invalid ZIP archive"),
+    (EOFError("fixture-secret"), "Unexpected end of archive"),
+    (ValueError("fixture-secret"), "Execution failed (ValueError)"),
+])
+def test_untrusted_exception_text_is_omitted(tmp_path, capsys, error, message):
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type="trade", source="archive",
+               path="historical/day.gz", url="https://example.test/day", expected_bytes=None)
+
+    def respond(request):
+        raise error
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(type(error)):
+            execute([job], tmp_path, client)
+    record = failure_record(capsys)
+    assert record["error_message"] == message
+    assert "fixture-secret" not in json.dumps(record)
+    assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
+
+
+def test_logging_failure_reports_when_no_job_failed(tmp_path, monkeypatch, capsys):
+    def failed_sync(fd):
+        raise OSError(errno.ENOSPC, "fixture-secret")
+
+    monkeypatch.setattr("bybit_data_downloader.backfill_execute.os.fsync", failed_sync)
+    with httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("No HTTP"))) as client:
+        with pytest.raises(OSError):
+            execute([], tmp_path, client)
+    record = failure_record(capsys)
+    assert record["log_error"] == "OSError"
+    assert "space" in record["error_message"].lower()
+    assert record["error_target"] is None
+    assert "fixture-secret" not in json.dumps(record)

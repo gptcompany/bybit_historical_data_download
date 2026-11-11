@@ -1,7 +1,11 @@
+import csv
 import gzip
+import io
 import hashlib
 import json
 import zipfile
+from pathlib import Path
+from decimal import Decimal
 from datetime import datetime, timezone
 
 import httpx
@@ -36,6 +40,50 @@ def test_container_validation_and_corruption(tmp_path, kind):
     path.write_bytes(path.read_bytes()[:-8])
     with pytest.raises((ValueError, EOFError, OSError, zipfile.BadZipFile)):
         validate(path, job)
+
+
+@pytest.mark.parametrize(("day", "change", "error"), [
+    ("2025-04-02", None, None),
+    ("2025-04-03", None, None),
+    ("2025-04-03", "invalid-value", "Invalid trade RPI"),
+    ("2025-04-03", "missing-value", "Malformed CSV row"),
+    ("2025-04-03", "renamed-header", "Unexpected trade schema"),
+    ("2025-04-03", "reordered-header", "Unexpected trade schema"),
+    ("2025-04-03", "extra-header", "Unexpected trade schema"),
+])
+def test_versioned_trade_headers(tmp_path, day, change, error):
+    fixture = Path(__file__).parent / "fixtures" / f"btc-trades-{day}.csv"
+    with fixture.open(newline="") as stream:
+        fields, sample = csv.reader(stream)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    if change == "renamed-header":
+        fields[-1] = "rpi"
+    elif change == "reordered-header":
+        fields[-2:] = reversed(fields[-2:])
+    elif change == "extra-header":
+        fields.append("extra")
+    writer.writerow(fields)
+    writer.writerow(sample)
+    for minute in range(1, 1440):
+        row = sample.copy()
+        row[0] = str(Decimal(sample[0]) + 60 * minute)
+        row[6] = str(minute)
+        if day == "2025-04-03":
+            row[-1] = str(minute % 2)
+        if minute == 1439 and change == "invalid-value":
+            row[-1] = "2"
+        if minute == 1439 and change == "missing-value":
+            row.pop()
+        writer.writerow(row)
+    path = tmp_path / "trade.csv.gz"
+    path.write_bytes(gzip.compress(output.getvalue().encode()))
+    job = dict(day=day, symbol="BTCUSDT", type="trade", source="archive")
+    if error:
+        with pytest.raises(ValueError, match=error):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
 
 
 @pytest.mark.parametrize("defect", ["day", "symbol", "duplicate", "gap", "number", "price-text", "timestamp-text"])
@@ -187,3 +235,94 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     assert (log["outcome"], log["downloaded"], log["skipped"], log["records"]) == ("success", 1, 0, 1440)
     assert log["quarantined"][0]["reason"] == "invalid-cached-records"
     assert log["quarantined"][0]["error"] == "ValueError"
+
+
+@pytest.mark.parametrize(("defect", "separator"), [
+    (None, "\n"), (None, "\r\n"), (None, "\r"), (None, "mixed"),
+    ("early", "\n"), ("nonterminal", "\n"), ("late", "\n"), ("missing-minute", "\n"),
+])
+def test_orderbook_midnight_tail(tmp_path, defect, separator):
+    fixture = Path(__file__).parent / "fixtures/btc-ob200-2026-06-29.jsonl"
+    first, last, *tail = map(json.loads, fixture.read_text().splitlines())
+    start = 1782691200000
+    rows = [first] + [dict(first, ts=start + minute * 60000) for minute in range(1, 1439)]
+    if defect != "missing-minute":
+        rows.append(last)
+    if defect == "early":
+        first["ts"] = start - 1
+    if defect == "late":
+        tail[-1]["ts"] = start + 86400000 + 1000
+    if defect == "nonterminal":
+        rows.insert(-1, tail.pop(0))
+    path = tmp_path / "fixture.zip"
+    member = "2026-06-29_BTCUSDT_ob200.data"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr(member, "".join(
+            json.dumps(row) + ("\r" if index == len(rows) - 1 else "\n")
+            if separator == "mixed" else json.dumps(row) + separator
+            for index, row in enumerate(rows + tail)))
+    job = dict(day="2026-06-29", symbol="BTCUSDT", type="orderbook", source="archive",
+               path="historical/orderbook/day.zip", url="https://example.test/day",
+               expected_bytes=path.stat().st_size)
+    calls = []
+
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(200, content=path.read_bytes())
+
+    root = tmp_path / "cold"
+    target = root / job["path"]
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        if defect:
+            reason = "Incomplete archive UTC minute coverage" if defect == "missing-minute" else "Record outside ordered UTC day"
+            with pytest.raises(ValueError, match=reason):
+                execute([job], root, client)
+            assert not target.exists()
+            return
+        execute([job], root, client)
+        execute([job], root, client)
+    assert calls == ["GET"]
+    with zipfile.ZipFile(target) as stream:
+        assert list(map(json.loads, stream.read(member).splitlines())) == rows
+    assert validate(target, job) == 1440
+    logs = [json.loads(line) for line in (root / "logs/backfill.jsonl").read_text().splitlines()]
+    assert [log["discarded_orderbook_tail"] for log in logs] == [8, 0]
+    assert [log["records"] for log in logs] == [1440, 1440]
+    assert logs[1]["skipped"] == 1
+
+
+@pytest.mark.parametrize("failure", ["invalid-records", "count-mismatch"])
+def test_orderbook_rewrite_validated_before_publication(tmp_path, monkeypatch, failure):
+    from bybit_data_downloader import backfill_execute as module
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = dict(type="delta", ts=START + 86400000, data=dict(
+        s="BTCUSDT", b=[], a=[], u=1440, seq=1440))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + json.dumps(tail).encode())
+    job["expected_bytes"] = path.stat().st_size
+    checked = []
+
+    def reject_rewrite(candidate, candidate_job):
+        checked.append(candidate)
+        assert candidate_job == job
+        assert not (root / job["path"]).exists()
+        assert validate(candidate, candidate_job) == 1440
+        if failure == "invalid-records":
+            raise module.BackfillDataError("Rejected rewritten archive")
+        return 1439
+
+    monkeypatch.setattr(module, "validate", reject_rewrite)
+    root = tmp_path / "cold"
+    reason = "Rejected rewritten archive" if failure == "invalid-records" else "Record count mismatch"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        with pytest.raises(ValueError, match=reason):
+            execute([job], root, client)
+    assert len(checked) == 1
+    assert not checked[0].exists()
+    assert not (root / job["path"]).exists()
+    assert not list(root.rglob("*.manifest.json"))
+    assert not list(root.rglob("*.part"))

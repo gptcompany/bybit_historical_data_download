@@ -92,6 +92,13 @@ backfill <release> --start-date 2026-06-30 --end-date 2026-11-09 --symbols BTCUS
 backfill <release> --start-date 2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types orderbook,funding,openinterest,longshortratio --intervals 1m,5m,15m --dry-run
 ```
 
+Il backfill trade riconosce due intestazioni esatte, la versione originale a dieci colonne e la versione con `RPI` finale. Negli archivi BTCUSDT ed ETHUSDT il 2 aprile 2025 UTC ha l'intestazione originale e il 3 aprile 2025 UTC ha `RPI`. Verifica effettuata con HEAD (200) e GET Range dei primi 8192 byte (206) su entrambi i giorni e simboli. Ogni riga della seconda versione deve avere `RPI` pari a `0` o `1`.
+
+La regola order book v1 scarta solo i record finali ordinati con timestamp nel primo secondo del giorno UTC successivo. Lo ZIP pubblicato contiene esclusivamente i record del giorno richiesto. Il manifest registra gli scarti con `discarded_orderbook_tail_v1`, mantiene in `expected_bytes` la dimensione dell'archivio sorgente e calcola l'hash sullo ZIP pubblicato. Il journal e il JSONL riportano gli scarti dei nuovi download in `discarded_orderbook_tail`. Nell'archivio BTCUSDT del 29 giugno 2026 erano otto, da 00:00:00.028 a 00:00:00.728 UTC del 30 giugno.
+
+In caso di errore, il record nel journal e `logs/backfill.jsonl` riportano la classe (`error`), il messaggio diagnostico (`error_message`), la serie (`error_type`), il giorno UTC (`error_day`), il simbolo (`error_symbol`) e il percorso relativo (`error_target`). I campi della serie sono nulli per gli errori senza un file associato. Se il log su disco non è scrivibile, il journal riporta anche `log_error`.
+
+
 Primo piano: 133 giorni, 1064 file. Secondo: 134 giorni, 1072 file.
 HEAD soltanto per gli archivi trade/ob200: dimensioni attese reali, errore se
 mancanti. Le API riportano dimensioni ignote separatamente. Nessun GET,
