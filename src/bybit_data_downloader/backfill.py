@@ -6,7 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
-from .backfill_execute import BackfillDataError, execute, record_failure, run_stats, write_run_log
+from .backfill_execute import (ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute,
+                               record_failure, run_stats, write_run_log)
 
 
 TYPES = {"trade", "orderbook", "klines", "funding", "openinterest", "longshortratio"}
@@ -73,7 +74,11 @@ def main(argv=None):
     parser.add_argument("--intervals", default="1m,5m,15m")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--orderbook-tail-max-ms", type=int, default=ORDERBOOK_TAIL_MAX_MS,
+                        help="Maximum final orderbook tail offset past UTC midnight (default: 60000 ms)")
     args = parser.parse_args(argv)
+    if args.orderbook_tail_max_ms < 1:
+        parser.error("--orderbook-tail-max-ms must be a positive integer")
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         active_job = {}
         planning = run_stats([])
@@ -86,7 +91,7 @@ def main(argv=None):
             write_run_log(planning, None if args.dry_run else args.data_root)
             raise
         if not args.dry_run:
-            execute(jobs, args.data_root, client)
+            execute(jobs, args.data_root, client, orderbook_tail_max_ms=args.orderbook_tail_max_ms)
             return
     print(json.dumps({"days": (args.end_date - args.start_date).days + 1,
                       "files": len(jobs), "archive_bytes": sum(j["expected_bytes"] or 0 for j in jobs),

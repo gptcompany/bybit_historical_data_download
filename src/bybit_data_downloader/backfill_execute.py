@@ -20,7 +20,7 @@ import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
 DAY = 86400000
-ORDERBOOK_TAIL_V1_MS = 1000
+ORDERBOOK_TAIL_MAX_MS = 60000
 TRADE_V1_FIELDS = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
 TRADE_V2_FIELDS = TRADE_V1_FIELDS + ["RPI"]
 NUMBER = {"type": "string", "pattern": r"^-?[0-9]+(?:\.[0-9]+)?$"}
@@ -51,14 +51,14 @@ def validate(path, job):
     return count
 
 
-def scan(path, job, *, allow_orderbook_tail=False):
+def scan(path, job, *, allow_orderbook_tail=False, orderbook_tail_max_ms=ORDERBOOK_TAIL_MAX_MS):
     try:
-        return _validate(path, job, allow_orderbook_tail)
+        return _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms)
     except (DecimalException, csv.Error, zlib.error) as error:
         raise BackfillDataError("Invalid archive record or compressed stream") from error
 
 
-def _validate(path, job, allow_orderbook_tail):
+def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
     start, end = bounds(job)
     if job["source"] == "api":
         rows = json.loads(path.read_text())
@@ -96,11 +96,23 @@ def _validate(path, job, allow_orderbook_tail):
     with tempfile.TemporaryDirectory(dir=path.parent) as scratch, sqlite3.connect(Path(scratch) / "ids") as ids:
         ids.execute("CREATE TABLE seen (id TEXT PRIMARY KEY)")
         minutes, previous, count, discarded = set(), start, 0, 0
-        limit = end + ORDERBOOK_TAIL_V1_MS if allow_orderbook_tail and job["type"] == "orderbook" else end
+        tail_allowed = allow_orderbook_tail and job["type"] == "orderbook"
+        max_offset, tail_start = 0, None
         def accept(timestamp, identity):
-            nonlocal previous, count, discarded
-            if not start <= timestamp < limit or timestamp < previous:
-                raise BackfillDataError("Record outside ordered UTC day")
+            nonlocal previous, count, discarded, max_offset, tail_start
+            position = count + discarded + 1
+            tail_rows = discarded
+            if timestamp >= end:
+                max_offset = max(max_offset, timestamp - end)
+                tail_start = tail_start or position
+                tail_rows += 1
+            if (timestamp < start or timestamp < previous
+                    or (timestamp < end and discarded)
+                    or (timestamp >= end and (not tail_allowed or max_offset > orderbook_tail_max_ms))):
+                raise BackfillDataError(
+                    f"Record outside ordered UTC day: position={position}, rows_seen={position}, "
+                    f"tail_start={tail_start}, tail_rows={tail_rows}, max_offset_ms={max_offset}, "
+                    f"limit_ms={orderbook_tail_max_ms if tail_allowed else 0}")
             try: ids.execute("INSERT INTO seen VALUES (?)", (identity,))
             except sqlite3.IntegrityError: raise BackfillDataError("Duplicate record ID") from None
             if timestamp < end:
@@ -260,11 +272,12 @@ def write_run_log(stats, root):
         print(json.dumps(stats), flush=True)
 
 
-def execute(jobs, root, client):
+def execute(jobs, root, client, *, orderbook_tail_max_ms=ORDERBOOK_TAIL_MAX_MS):
     stats = run_stats(jobs)
     stats["phase"] = "execution"
     job = {}
     try:
+        Draft202012Validator({"type": "integer", "minimum": 1}).validate(orderbook_tail_max_ms)
         root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         with (root / ".backfill.lock").open("a") as lock:
@@ -313,7 +326,8 @@ def execute(jobs, root, client):
                             else: stream.write(json.dumps(api_rows(client, job)).encode())
                             stream.flush(); os.fsync(stream.fileno())
                             if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
-                            count, discarded = scan(staging, job, allow_orderbook_tail=True)
+                            count, discarded = scan(staging, job, allow_orderbook_tail=True,
+                                                    orderbook_tail_max_ms=orderbook_tail_max_ms)
                             if discarded:
                                 publish_orderbook_day(staging, target, count, job)
                             else:

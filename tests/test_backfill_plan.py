@@ -62,3 +62,28 @@ def test_dry_run_prints_plan_without_creating_data(tmp_path, capsys):
     assert result["files"] == 2
     assert result["api_files_unknown_bytes"] == 2
     assert not root.exists()
+
+
+@pytest.mark.parametrize("limit", [None, 1051])
+def test_cli_passes_orderbook_tail_limit(tmp_path, monkeypatch, limit):
+    from bybit_data_downloader import backfill
+
+    received = []
+    monkeypatch.setattr(backfill, "execute", lambda jobs, root, client, **kwargs: received.append(kwargs))
+    args = ["--start-date", "2026-06-29", "--end-date", "2026-06-29",
+            "--types", "klines", "--data-root", str(tmp_path)]
+    if limit is not None:
+        args += ["--orderbook-tail-max-ms", str(limit)]
+    main(args)
+    assert received == [{"orderbook_tail_max_ms": 60000 if limit is None else limit}]
+
+
+@pytest.mark.parametrize("limit", ["0", "-1", "invalid"])
+def test_cli_rejects_invalid_tail_limit_before_network(tmp_path, monkeypatch, limit):
+    from bybit_data_downloader import backfill
+
+    monkeypatch.setattr(backfill.httpx, "Client", lambda **kwargs: pytest.fail("network"))
+    with pytest.raises(SystemExit) as error:
+        main(["--start-date", "2026-06-29", "--end-date", "2026-06-29",
+              "--data-root", str(tmp_path), "--orderbook-tail-max-ms", limit])
+    assert error.value.code == 2

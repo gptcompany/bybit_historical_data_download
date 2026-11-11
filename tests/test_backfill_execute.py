@@ -251,7 +251,7 @@ def test_orderbook_midnight_tail(tmp_path, defect, separator):
     if defect == "early":
         first["ts"] = start - 1
     if defect == "late":
-        tail[-1]["ts"] = start + 86400000 + 1000
+        tail[-1]["ts"] = start + 86400000 + 60001
     if defect == "nonterminal":
         rows.insert(-1, tail.pop(0))
     path = tmp_path / "fixture.zip"
@@ -353,8 +353,18 @@ def test_orderbook_structural_eth_tail(tmp_path, defect):
     with httpx.Client(transport=httpx.MockTransport(
             lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
         if defect:
-            with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            with pytest.raises(ValueError, match="Record outside ordered UTC day") as error:
                 execute([job], root, client)
+            expected = {
+                "late": (1451, 11, 60001, 1441),
+                "nonterminal": (1442, 1, 50, 1441),
+                "early": (1, 0, 0, None),
+            }[defect]
+            position, tail_rows, maximum, first_tail = expected
+            for field in (f"position={position}", f"rows_seen={position}",
+                          f"tail_rows={tail_rows}", f"max_offset_ms={maximum}",
+                          f"tail_start={first_tail}", "limit_ms=60000"):
+                assert field in str(error.value)
             assert not (root / job["path"]).exists()
             assert not list(root.rglob("*.manifest.json"))
             assert not list(root.rglob("*.part"))
@@ -365,3 +375,29 @@ def test_orderbook_structural_eth_tail(tmp_path, defect):
     assert log["discarded_orderbook_tail"] == 11
     manifest = json.loads((root / job["path"]).with_suffix(".gz.manifest.json").read_text())
     assert manifest["discarded_orderbook_tail_v1"] == 11
+
+
+@pytest.mark.parametrize("limit,offsets,accepted", [
+    (1050, [50, 1051], False), (1051, [50, 1051], True),
+    (60000, [50, 60000], True), (60000, [50, 60001], False),
+    (60000, [1051, 50], False),
+])
+def test_orderbook_configured_tail_limit(tmp_path, limit, offsets, accepted):
+    from bybit_data_downloader.backfill_execute import scan
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = [dict(type="delta", ts=START + 86400000 + offset,
+                 data=dict(s="BTCUSDT", b=[], a=[], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate(offsets)]
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + "\n".join(map(json.dumps, tail)).encode())
+    if accepted:
+        assert scan(path, job, allow_orderbook_tail=True, orderbook_tail_max_ms=limit) == (1440, 2)
+        # A published/cached file must remain strictly within the requested day.
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            validate(path, job)
+    else:
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            scan(path, job, allow_orderbook_tail=True, orderbook_tail_max_ms=limit)
