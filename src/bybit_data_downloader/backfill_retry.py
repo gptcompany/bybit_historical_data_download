@@ -1,5 +1,4 @@
 """Cold retry policy v1: bounded attempts, full jitter, Retry-After minimum."""
-import json
 import math
 import random
 import sys
@@ -8,6 +7,7 @@ from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 
 import httpx
+from scripts.cold_deploy import emit
 
 TRANSIENT = (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError)
 
@@ -22,7 +22,8 @@ class RetryPolicy:
         if self.attempts < 1 or any(not math.isfinite(v) or v < 0 for v in (self.base_delay, self.max_delay)):
             raise ValueError("Retry attempts must be positive and delays finite and nonnegative")
 
-    def run(self, operation, target, *, on_retry=None):
+    def run(self, operation, target, *, on_retry=None, emission_state=None):
+        state = {} if emission_state is None else emission_state
         ceiling = min(self.base_delay, self.max_delay)
         for attempt in range(1, self.attempts + 1):
             try:
@@ -49,6 +50,6 @@ class RetryPolicy:
                              exception=type(error).__name__, wait_seconds=wait)
                 if on_retry is not None:
                     on_retry(event)
-                print(json.dumps(event), file=sys.stderr, flush=True)
+                emit(event, state, stream=sys.stderr, event=True)
                 time.sleep(wait)
                 ceiling = min(self.max_delay, ceiling * 2)
