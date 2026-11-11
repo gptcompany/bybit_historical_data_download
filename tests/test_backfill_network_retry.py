@@ -100,3 +100,54 @@ def test_partial_stream_restarts_clean(persistent, tmp_path, monkeypatch):
             assert (tmp_path / job["path"]).read_bytes() == payload
     assert len(calls) == (3 if persistent else 2)
     assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.parametrize("header,minimum", [("Wed, 11 Nov 2026 00:00:07 GMT", 7), ("invalid", 0), ("inf", 0)])
+def test_retry_after_date_and_invalid_header(header, minimum, monkeypatch):
+    from bybit_data_downloader.backfill_retry import RetryPolicy
+    waits, calls = [], []
+    monkeypatch.setattr("time.time", lambda: 1794355200)
+    monkeypatch.setattr("time.sleep", waits.append)
+    monkeypatch.setattr("random.uniform", lambda low, high: low)
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": header}) if len(calls) == 1 else httpx.Response(200)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        RetryPolicy().run(lambda: client.get("https://example.test/list").raise_for_status(), "list")
+    assert waits == [minimum]
+
+
+def test_configurable_budget_and_capped_jitter(monkeypatch):
+    from bybit_data_downloader.backfill_retry import RetryPolicy
+    waits, ceilings = [], []
+    monkeypatch.setattr("time.sleep", waits.append)
+    def jitter(low, high):
+        assert low == 0
+        ceilings.append(high)
+        return high / 2
+    monkeypatch.setattr("random.uniform", jitter)
+    def fail(): raise httpx.ReadTimeout("timeout")
+    with pytest.raises(httpx.ReadTimeout): RetryPolicy(5, 2, 3).run(fail, "target")
+    assert ceilings == [2, 3, 3, 3] and waits == [1, 1.5, 1.5, 1.5]
+    for values in [(0, 1, 30), (3, -1, 30), (3, 1, float("inf"))]:
+        with pytest.raises(ValueError): RetryPolicy(*values)
+
+
+def test_api_list_restarts_without_duplicate_rows(tmp_path, monkeypatch):
+    from test_backfill_execute import START
+    waits, calls = [], []
+    monkeypatch.setattr("time.sleep", waits.append)
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type="funding", source="api",
+               path="funding/day.json", url="https://example.test/list", expected_bytes=None)
+    rows = [dict(symbol="BTCUSDT", fundingRate="0.001", fundingRateTimestamp=str(START + i * 28800000)) for i in range(3)]
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 2: raise httpx.ConnectError("interrupted page")
+        page = [rows[0]] if "cursor" not in request.url.params else rows[1:]
+        result = dict(list=page)
+        if len(page) == 1: result["nextPageCursor"] = "next"
+        return httpx.Response(200, json=dict(retCode=0, result=result))
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        execute([job], tmp_path, client)
+    assert json.loads((tmp_path / job["path"]).read_text()) == rows
+    assert len(calls) == 4 and len(waits) == 1
