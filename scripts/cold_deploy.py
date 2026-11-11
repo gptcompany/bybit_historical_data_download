@@ -213,7 +213,13 @@ class RunSummary(ClosedRecord):
     finished_at: AwareDatetime
     days: list[date]
     phase: Literal['planning', 'execution']
+    discarded_orderbook_tail: Count = 0
     error: str | None = None
+    error_message: str | None = None
+    error_type: Literal['trade', 'orderbook', 'klines', 'funding', 'openinterest', 'longshortratio'] | None = None
+    error_day: date | None = None
+    error_symbol: Annotated[str, Field(pattern='^[A-Z0-9]+USDT$')] | None = None
+    error_target: str | None = None
     log_error: str | None = None
     start_date: date | None = None
     end_date: date | None = None

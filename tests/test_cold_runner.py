@@ -169,4 +169,3 @@ def test_dell_trade_summary_preserves_observed_progress(docker_calls, monkeypatc
     assert result["counts_status"] == "reported"
     for key, value in child.items():
         assert result[key] == value
-
