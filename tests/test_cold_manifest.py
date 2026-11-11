@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_real_inventory_pins_the_dell_cold_contract():
     config = inventory(json.loads((ROOT / 'deploy/cold.json').read_bytes()))
+    assert config['image'] == (
+        'ghcr.io/gptcompany/bybit-downloader@sha256:'
+        '13255f647e4dead0b191d159d37084fd982d1992a65f1384a1dca75b3f0876f2'
+    )
+    assert config['image_source_sha'] == '975930e22505cf314dd609809fdce8940a98c27c'
     assert (config['user'], config['uid'], config['gid']) == ('sam', 1000, 1000)
     assert config['dns'] == ['1.1.1.1', '9.9.9.9']
     assert config['cold_root'] == '/data/cold/12TB/bybit_data_downloader/data'

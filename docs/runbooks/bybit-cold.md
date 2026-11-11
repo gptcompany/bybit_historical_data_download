@@ -46,11 +46,11 @@ B5 lo verifica dopo review, merge e nuova release approvata.
 
 ## Provenienza della build
 
-Build-only B5: [run 42868502369](https://github.com/gptcompany/progressive-deploy/actions/runs/42868502369),
-job `130013158371`, conclusione success. Sorgente immagine:
-`949b166bcde430899cd434e476b1c6c452081b89` (merge proprietario #10).
+Build-only B5: [run 42939765677](https://github.com/gptcompany/progressive-deploy/actions/runs/42939765677),
+job `130258523351`, conclusione success. Sorgente immagine:
+`975930e22505cf314dd609809fdce8940a98c27c` (merge proprietario #14: schema RPI, diagnostica e coda ob200).
 Immagine approvata, registrata anche nel manifest:
-`ghcr.io/gptcompany/bybit-downloader@sha256:e88ca361b3310c6c2575cf991a0de8dde8bdaa7ad73c6b63f56b03799bfcc623`.
+`ghcr.io/gptcompany/bybit-downloader@sha256:13255f647e4dead0b191d159d37084fd982d1992a65f1384a1dca75b3f0876f2`.
 Il digest è `containerimage.digest` della fase Build and push, confermato da B5;
 non usare un tag mobile o lo SHA del workflow progressive-deploy come sorgente.
 
