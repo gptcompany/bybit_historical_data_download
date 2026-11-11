@@ -64,7 +64,7 @@ def test_dry_run_prints_plan_without_creating_data(tmp_path, capsys):
     assert not root.exists()
 
 
-@pytest.mark.parametrize("limit", [None, 1051])
+@pytest.mark.parametrize("limit", [None, 1051, 86399999])
 def test_cli_passes_orderbook_tail_limit(tmp_path, monkeypatch, limit):
     from bybit_data_downloader import backfill
 
@@ -79,7 +79,7 @@ def test_cli_passes_orderbook_tail_limit(tmp_path, monkeypatch, limit):
                          "orderbook_tail_max_ms": 60000 if limit is None else limit}]
 
 
-@pytest.mark.parametrize("limit", ["0", "-1", "invalid"])
+@pytest.mark.parametrize("limit", ["0", "-1", "invalid", "86400000", "172800000"])
 def test_cli_rejects_invalid_tail_limit_before_network(tmp_path, monkeypatch, limit):
     from bybit_data_downloader import backfill
 

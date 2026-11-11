@@ -381,6 +381,9 @@ def test_orderbook_structural_eth_tail(tmp_path, defect):
     (1050, [50, 1051], False), (1051, [50, 1051], True),
     (60000, [50, 60000], True), (60000, [50, 60001], False),
     (60000, [1051, 50], False),
+    (86399999, [1051, 86399999], True),
+    (86400000, [1051, 86400000], False),
+    (172800000, [1051, 86400001], False),
 ])
 def test_orderbook_configured_tail_limit(tmp_path, limit, offsets, accepted):
     from bybit_data_downloader.backfill_execute import scan
@@ -401,3 +404,35 @@ def test_orderbook_configured_tail_limit(tmp_path, limit, offsets, accepted):
     else:
         with pytest.raises(ValueError, match="Record outside ordered UTC day"):
             scan(path, job, allow_orderbook_tail=True, orderbook_tail_max_ms=limit)
+
+
+@pytest.mark.parametrize("limit", [86400000, 172800000])
+def test_execute_rejects_out_of_range_tail_configuration(tmp_path, limit):
+    from jsonschema import ValidationError
+
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: pytest.fail("configuration must fail before network"))) as client:
+        with pytest.raises(ValidationError, match="maximum"):
+            execute([], tmp_path / "cold", client, orderbook_tail_max_ms=limit)
+
+
+def test_download_rejects_second_day_with_extreme_override(tmp_path):
+    from bybit_data_downloader.backfill_execute import download_file
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = [dict(type="delta", ts=START + 86400000 + offset,
+                 data=dict(s="BTCUSDT", b=[], a=[], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate([1051, 86400000])]
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + "\n".join(map(json.dumps, tail)).encode())
+    job["expected_bytes"] = path.stat().st_size
+    target = tmp_path / "target.gz"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            download_file(client, job, target, orderbook_tail_max_ms=86400000)
+    assert not target.exists()
+    assert not list(tmp_path.rglob("*.manifest.json"))
+    assert not list(tmp_path.rglob("*.part"))
