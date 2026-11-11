@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
+from .backfill_retry import RetryPolicy
 from .backfill_execute import BackfillDataError, execute, record_failure, run_stats, write_run_log
 
 
@@ -14,7 +15,7 @@ INTERVALS = {"1m": 1, "5m": 5, "15m": 15}
 API = "https://api.bybit.com/v5/market/"
 
 
-def plan(start, end, symbols, types, intervals, client, *, active_job=None):
+def plan(start, end, symbols, types, intervals, client, *, active_job=None, retry=RetryPolicy()):
     """Return one deterministic output per UTC day/series, with archive HEAD sizes."""
     if start > end or end >= datetime.now(timezone.utc).date():
         raise BackfillDataError("Require an ordered range of closed UTC days")
@@ -50,8 +51,11 @@ def plan(start, end, symbols, types, intervals, client, *, active_job=None):
                     if job["source"] == "archive":
                         if active_job is not None:
                             active_job.update(job)
-                        response = client.head(job["url"])
-                        response.raise_for_status()
+                        def head():
+                            response = client.head(job["url"])
+                            response.raise_for_status()
+                            return response
+                        response = retry.run(head, job["path"])
                         try:
                             size = int(response.headers.get("Content-Length", "0"))
                         except ValueError:
@@ -73,20 +77,24 @@ def main(argv=None):
     parser.add_argument("--intervals", default="1m,5m,15m")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--retry-attempts", type=int, default=RetryPolicy.attempts)
+    parser.add_argument("--retry-base-delay", type=float, default=RetryPolicy.base_delay)
+    parser.add_argument("--retry-max-delay", type=float, default=RetryPolicy.max_delay)
     args = parser.parse_args(argv)
+    retry = RetryPolicy(args.retry_attempts, args.retry_base_delay, args.retry_max_delay)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         active_job = {}
         planning = run_stats([])
         planning.update(phase="planning", start_date=args.start_date.isoformat(), end_date=args.end_date.isoformat())
         try:
             jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
-                        args.types.split(","), args.intervals.split(","), client, active_job=active_job)
+                        args.types.split(","), args.intervals.split(","), client, active_job=active_job, retry=retry)
         except Exception as error:
             record_failure(planning, error, active_job)
             write_run_log(planning, None if args.dry_run else args.data_root)
             raise
         if not args.dry_run:
-            execute(jobs, args.data_root, client)
+            execute(jobs, args.data_root, client, retry=retry)
             return
     print(json.dumps({"days": (args.end_date - args.start_date).days + 1,
                       "files": len(jobs), "archive_bytes": sum(j["expected_bytes"] or 0 for j in jobs),

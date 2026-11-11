@@ -136,3 +136,31 @@ B5 disabilita i timer cold e sceglie una precedente release/digest approvata
 con inventario versionato; rerender, daemon-reload e drift prima di riattivare.
 Nessuna cancellazione dei dati cold o riattivazione implicita dello scheduler
 GitOps/legacy; il revert richiede una nuova decisione sullo stato runtime.
+
+## Retry cold v1
+
+`backfill_retry.RetryPolicy` è la sorgente versionata comune per HEAD di
+pianificazione e trasferimento completo (inclusa la lista API paginata).
+Il retry storico in `ByBitHistoricalDataDownloader` non è chiamato dal backfill.
+Il transport nativo httpx ritenta solo connessione/connect timeout: non copre
+letture interrotte né HTTP 429/5xx, quindi qui si usa una politica per operazione.
+
+Default: tre tentativi totali, base 1 s e tetto 30 s; full jitter uniforme fra
+zero e `min(tetto, base * 2**(tentativo-1))`. `Retry-After` numerico o HTTP-date
+è un minimo e può superare il tetto del backoff. Header non valido: solo backoff.
+Il modulo backfill espone `--retry-attempts`, `--retry-base-delay`,
+`--retry-max-delay`; la stessa istanza serve entrambe le fasi. I default sono
+nella release, senza configurazioni specifiche per host.
+
+Si ritentano solo TimeoutException, ConnectError, RemoteProtocolError, ReadError
+e HTTP 429/5xx. 404, schema e validazione restano immediati. Ogni tentativo usa
+uno staging nuovo, eliminato anche dopo interruzione dello stream; pubblicazione
+e manifest seguono solo la validazione. Budget esaurito: failure con error_target,
+nessun complete/missing per il file non verificato. Ogni retry emette su stderr
+JSON con event, target relativo, attempt (tentativo fallito, base 1), exception
+(solo classe) e wait_seconds. Il riepilogo stdout e JSONL resta invariato.
+
+Prova: CI con MockTransport, senza rete reale; 404 caratterizzato prima della
+regressione RED, poi successo/esaurimento per HEAD e GET, stream parziale,
+Retry-After e riavvio della paginazione senza duplicati. Serve rebuild immagine:
+build e PR manifest spettano a B5; nessuna attivazione in questa modifica.

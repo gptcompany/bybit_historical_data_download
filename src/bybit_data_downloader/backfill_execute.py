@@ -19,6 +19,8 @@ from uuid import uuid4
 import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
+from .backfill_retry import RetryPolicy
+
 DAY = 86400000
 ORDERBOOK_TAIL_V1_MS = 1000
 TRADE_V1_FIELDS = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
@@ -260,7 +262,27 @@ def write_run_log(stats, root):
         print(json.dumps(stats), flush=True)
 
 
-def execute(jobs, root, client):
+def download_file(client, job, target):
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as stream:
+        staging = Path(stream.name)
+        try:
+            if job["source"] == "archive":
+                with client.stream("GET", job["url"], headers={"Accept-Encoding": "identity"}) as response:
+                    response.raise_for_status()
+                    for chunk in response.iter_bytes(): stream.write(chunk)
+            else: stream.write(json.dumps(api_rows(client, job)).encode())
+            stream.flush(); os.fsync(stream.fileno())
+            if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
+            count, discarded = scan(staging, job, allow_orderbook_tail=True)
+            if discarded:
+                publish_orderbook_day(staging, target, count, job)
+            else:
+                staging.replace(target)
+        finally: staging.unlink(missing_ok=True)
+    return count, discarded
+
+
+def execute(jobs, root, client, *, retry=RetryPolicy()):
     stats = run_stats(jobs)
     stats["phase"] = "execution"
     job = {}
@@ -303,22 +325,7 @@ def execute(jobs, root, client):
                         stats["quarantined"].append(dict(path=job["path"], reason=reason, error="ValueError" if isinstance(error, BackfillDataError)
                                                         else type(error).__name__))
                 if count is None:
-                    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as stream:
-                        staging = Path(stream.name)
-                        try:
-                            if job["source"] == "archive":
-                                with client.stream("GET", job["url"], headers={"Accept-Encoding": "identity"}) as response:
-                                    response.raise_for_status()
-                                    for chunk in response.iter_bytes(): stream.write(chunk)
-                            else: stream.write(json.dumps(api_rows(client, job)).encode())
-                            stream.flush(); os.fsync(stream.fileno())
-                            if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
-                            count, discarded = scan(staging, job, allow_orderbook_tail=True)
-                            if discarded:
-                                publish_orderbook_day(staging, target, count, job)
-                            else:
-                                staging.replace(target)
-                        finally: staging.unlink(missing_ok=True)
+                    count, discarded = retry.run(lambda: download_file(client, job, target), job["path"])
                     stats["discarded_orderbook_tail"] += discarded
                     stats["downloaded"] += 1
                 else: stats["skipped"] += 1
