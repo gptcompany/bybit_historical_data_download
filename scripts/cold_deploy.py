@@ -214,6 +214,7 @@ class RunSummary(ClosedRecord):
     days: list[date]
     phase: Literal['planning', 'execution']
     discarded_orderbook_tail: Count = 0
+    retries: Count = 0
     error: str | None = None
     error_message: str | None = None
     error_type: Literal['trade', 'orderbook', 'klines', 'funding', 'openinterest', 'longshortratio'] | None = None
@@ -247,6 +248,7 @@ class PlanJob(ClosedRecord):
 
 
 class PlanSummary(ClosedRecord):
+    retries: Count = 0
     days: Annotated[int, Field(gt=0)]
     files: Count
     archive_bytes: Count
@@ -260,6 +262,31 @@ class PlanSummary(ClosedRecord):
                 or self.api_files_unknown_bytes != sum(job.source == 'api' for job in self.jobs)):
             raise ValueError('Plan counts differ from jobs')
         return self
+
+
+class RetryEvent(ClosedRecord):
+    event: Literal['retry']
+    target: Annotated[str, Field(pattern=r'^(historical|market_metrics)/[A-Za-z0-9_./-]+$')]
+    attempt: Annotated[int, Field(gt=0)]
+    exception: Literal['TimeoutException', 'ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout',
+                       'ConnectError', 'RemoteProtocolError', 'ReadError', 'HTTPStatusError']
+    wait_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
+def forward_retries(stderr, config, dry_run):
+    for line in stderr.splitlines():
+        try:
+            event = RetryEvent.model_validate_json(line).model_dump_json()
+        except ValueError:
+            continue
+        print(event, file=sys.stderr, flush=True)
+        if not dry_run:
+            log = Path(config['cold_root']) / 'logs/backfill.jsonl'
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open('a') as stream:
+                stream.write(event + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
 
 
 def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
@@ -285,6 +312,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     try:
         if dry_run and completed.returncode == 0:
             plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
+            forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
             return dict(plan, **metadata, outcome='success', phase='planning')
         RunSummary.model_validate_json(completed.stdout)
         summary = json.loads(completed.stdout)  # Preserve the validated child's timestamp spelling.
@@ -292,6 +320,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
             raise ValueError('Child exit status contradicts summary')
     except ValueError:
         return dict(unknown, counts_status='unknown', error='InvalidRunSummary')
+    forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
     return dict(summary, **metadata, counts_status='reported')
 
 

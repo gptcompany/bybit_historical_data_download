@@ -212,7 +212,7 @@ def digest(path):
 
 def run_stats(jobs):
     return dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
-                discarded_orderbook_tail=0,
+                discarded_orderbook_tail=0, retries=0,
                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
 
 
@@ -282,9 +282,9 @@ def download_file(client, job, target):
     return count, discarded
 
 
-def execute(jobs, root, client, *, retry=RetryPolicy()):
+def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0):
     stats = run_stats(jobs)
-    stats["phase"] = "execution"
+    stats.update(phase="execution", retries=planning_retries)
     job = {}
     try:
         root = Path(root).resolve()
@@ -325,7 +325,8 @@ def execute(jobs, root, client, *, retry=RetryPolicy()):
                         stats["quarantined"].append(dict(path=job["path"], reason=reason, error="ValueError" if isinstance(error, BackfillDataError)
                                                         else type(error).__name__))
                 if count is None:
-                    count, discarded = retry.run(lambda: download_file(client, job, target), job["path"])
+                    count, discarded = retry.run(lambda: download_file(client, job, target), job["path"],
+                                                 on_retry=lambda _: stats.update(retries=stats["retries"] + 1))
                     stats["discarded_orderbook_tail"] += discarded
                     stats["downloaded"] += 1
                 else: stats["skipped"] += 1
