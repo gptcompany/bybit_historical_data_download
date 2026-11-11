@@ -26,3 +26,75 @@ def test_404_is_immediate(phase, tmp_path, capsys):
     assert calls == (["HEAD"] if phase == "planning" else ["GET"])
     assert not (tmp_path / job["path"]).exists()
     assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.parametrize("phase", ["planning", "execution"])
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, 429, 503])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_transient_budget(phase, failure, persistent, tmp_path, monkeypatch, capsys):
+    job, fixture = archive(tmp_path)
+    payload = fixture.read_bytes()
+    calls, waits = [], []
+    monkeypatch.setattr("time.sleep", waits.append)
+    monkeypatch.setattr("random.uniform", lambda low, high: high)
+    def respond(request):
+        calls.append(request.method)
+        if persistent or len(calls) == 1:
+            if isinstance(failure, int):
+                return httpx.Response(failure, headers={"Retry-After": "7"} if failure == 429 else {})
+            raise failure("untrusted upstream text", request=request)
+        return httpx.Response(200, headers={"Content-Length": str(len(payload))}, content=payload)
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(backfill.httpx, "Client", lambda **kwargs: client)
+    args = ["--start-date", job["day"], "--end-date", job["day"], "--symbols", "BTCUSDT",
+            "--types", "trade", "--data-root", str(tmp_path)]
+    def run():
+        if phase == "planning":
+            backfill.main(args + ["--dry-run"])
+        else:
+            execute([job], tmp_path, client)
+    if persistent:
+        with pytest.raises(httpx.HTTPError): run()
+        summary = json.loads(capsys.readouterr().out)
+        assert summary["outcome"] == "failure" and summary["error_target"]
+        assert summary["downloaded"] == summary["skipped"] == 0
+        assert len(calls) == 3
+        assert not list(tmp_path.rglob("*.manifest.json"))
+    else:
+        run()
+        assert len(calls) == 2
+        if phase == "execution":
+            assert (tmp_path / job["path"]).read_bytes() == payload
+    assert len(waits) == (2 if persistent else 1)
+    if failure == 429: assert all(wait >= 7 for wait in waits)
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert len(records) == len(waits)
+    assert all(r["event"] == "retry" and r["target"] and r["exception"] for r in records)
+    assert [r["attempt"] for r in records] == list(range(1, len(waits) + 1))
+    assert [r["wait_seconds"] for r in records] == waits
+    assert "untrusted upstream text" not in json.dumps(records)
+    assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_partial_stream_restarts_clean(persistent, tmp_path, monkeypatch):
+    job, fixture = archive(tmp_path)
+    payload, calls = fixture.read_bytes(), []
+    monkeypatch.setattr("time.sleep", lambda delay: None)
+    class Broken(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"partial"
+            raise httpx.RemoteProtocolError("disconnected")
+    def respond(request):
+        calls.append(request.method)
+        assert not (tmp_path / job["path"]).exists()
+        assert not list(tmp_path.rglob("*.manifest.json"))
+        return httpx.Response(200, stream=Broken()) if persistent or len(calls) == 1 else httpx.Response(200, content=payload)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        if persistent:
+            with pytest.raises(httpx.RemoteProtocolError): execute([job], tmp_path, client)
+        else:
+            execute([job], tmp_path, client)
+            assert (tmp_path / job["path"]).read_bytes() == payload
+    assert len(calls) == (3 if persistent else 2)
+    assert not list(tmp_path.rglob("*.part"))
