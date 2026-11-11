@@ -1,5 +1,6 @@
 """Cold log faults must preserve results; CI-only offline regression matrix."""
 import ast
+from collections import Counter
 import errno
 import json
 import sys
@@ -24,26 +25,35 @@ DATA_IO = {
     "_validate": {"gzip.open(path, 'rt', newline='')", "archive.open(names[0])"},
     "digest": {"path.open('rb')"},
     "publish_orderbook_day": {"filtered.flush()", "os.fsync(filtered.fileno())", "source.open(member)",
-                              "output.open(member, 'w', force_zip64=True)"},
+                              "output.open(member, 'w', force_zip64=True)",
+                              "day.writelines((line.encode('utf-8') for line in islice(lines, count)))"},
     "download_file": {"stream.flush()", "os.fsync(stream.fileno())", "stream.write(chunk)",
                       "stream.write(json.dumps(api_rows(client, job)).encode())"},
     "execute": {"root.mkdir(parents=True, exist_ok=True)", "(root / '.backfill.lock').open('a')",
-                "target.parent.mkdir(parents=True, exist_ok=True)", "stream.flush()", "os.fsync(stream.fileno())"},
+                "target.parent.mkdir(parents=True, exist_ok=True)", "stream.flush()", "os.fsync(stream.fileno())",
+                "json.dump(data, stream)"},
 }
-OUTPUT = {"print", "open", "write", "write_text", "write_bytes", "flush", "fsync", "mkdir"}
+OUTPUT = {"print", "open", "write", "write_text", "write_bytes", "flush", "fsync", "mkdir", "writelines", "dump", "close"}
 
 
 def direct_output(tree):
     violations = []
-    for function in ast.walk(tree):
-        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) or function.name == "emit":
-            continue
-        for node in ast.walk(function):
-            if not isinstance(node, ast.Call):
-                continue
+    allowed = {scope: Counter(calls) for scope, calls in DATA_IO.items()}
+    def visit(node, scope="module"):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = node.name
+        if isinstance(node, ast.Call) and scope != "emit":
             name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-            if name in OUTPUT and ast.unparse(node) not in DATA_IO.get(function.name, set()):
-                violations.append((function.name, node.lineno, name))
+            if name in OUTPUT:
+                calls = allowed.setdefault(scope, Counter())
+                expression = ast.unparse(node)
+                if calls[expression]:
+                    calls[expression] -= 1
+                else:
+                    violations.append((scope, node.lineno, name))
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+    visit(tree)
     return violations
 
 
@@ -56,8 +66,12 @@ def test_cold_output_only_through_emitter(module):
 @pytest.mark.parametrize("statement", ["print(event)", "sys.stderr.write(event)",
                                        "log.open('a')", "stream.flush()", "os.fsync(fd)"])
 def test_ast_gate_rejects_direct_output(statement):
-    for name in ("new_cold_step", "execute"):
-        assert direct_output(ast.parse("def " + name + "():\n    " + statement))
+    assert direct_output(ast.parse(statement))
+    assert direct_output(ast.parse("def new_cold_step():\n    " + statement))
+    tree = ast.parse((Path(__file__).parents[1] / MODULES[2]).read_text())
+    execute = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "execute")
+    execute.body.extend(ast.parse(statement).body)
+    assert direct_output(tree)
 
 
 @pytest.mark.parametrize("operation", ["mkdir", "open", "write", "flush", "fsync", "close"])
