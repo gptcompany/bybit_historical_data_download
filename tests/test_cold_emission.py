@@ -19,7 +19,7 @@ MODULES = ["scripts/cold_deploy.py"] + [
     "src/bybit_data_downloader/" + name + ".py"
     for name in ("backfill", "backfill_execute", "backfill_retry")]
 # Data, manifest, lock and unit I/O are outside the logging contract.
-DATA_IO = {"_install", "digest", "download_file", "execute", "publish_orderbook_day", "scan"}
+DATA_IO = {"_install", "_validate", "digest", "download_file", "execute", "publish_orderbook_day", "scan"}
 OUTPUT = {"print", "open", "write", "write_text", "write_bytes", "flush", "fsync", "mkdir"}
 
 
@@ -97,6 +97,8 @@ def test_final_stdout_fault_keeps_result(side, operation, error_type, tmp_path, 
             backfill.main(["--start-date", "2026-11-09", "--end-date", "2026-11-09", "--types", "klines",
                            "--data-root", str(tmp_path / "absent"), "--dry-run"])
         assert not (tmp_path / "absent").exists()
+        attempted = json.loads(stream.write.call_args_list[0].args[0])
+        assert attempted["events_not_written"] == 0 and attempted["retries"] == 0
         return
     assert stats["log_error"] == error_type.__name__
     assert stats["phase"] == "execution" and stats["records"] == 17 and stats["retries"] == 2
