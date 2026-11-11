@@ -235,3 +235,51 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     assert (log["outcome"], log["downloaded"], log["skipped"], log["records"]) == ("success", 1, 0, 1440)
     assert log["quarantined"][0]["reason"] == "invalid-cached-records"
     assert log["quarantined"][0]["error"] == "ValueError"
+
+
+@pytest.mark.parametrize("defect", [None, "early", "nonterminal", "late", "missing-minute"])
+def test_orderbook_midnight_tail(tmp_path, defect):
+    fixture = Path(__file__).parent / "fixtures/btc-ob200-2026-06-29.jsonl"
+    first, last, *tail = map(json.loads, fixture.read_text().splitlines())
+    start = 1782691200000
+    rows = [first] + [dict(first, ts=start + minute * 60000) for minute in range(1, 1439)]
+    if defect != "missing-minute":
+        rows.append(last)
+    if defect == "early":
+        first["ts"] = start - 1
+    if defect == "late":
+        tail[-1]["ts"] = start + 86400000 + 1000
+    if defect == "nonterminal":
+        rows.insert(-1, tail.pop(0))
+    path = tmp_path / "fixture.zip"
+    member = "2026-06-29_BTCUSDT_ob200.data"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr(member, "".join(json.dumps(row) + "\n" for row in rows + tail))
+    job = dict(day="2026-06-29", symbol="BTCUSDT", type="orderbook", source="archive",
+               path="historical/orderbook/day.zip", url="https://example.test/day",
+               expected_bytes=path.stat().st_size)
+    calls = []
+
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(200, content=path.read_bytes())
+
+    root = tmp_path / "cold"
+    target = root / job["path"]
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        if defect:
+            reason = "Incomplete archive UTC minute coverage" if defect == "missing-minute" else "Record outside ordered UTC day"
+            with pytest.raises(ValueError, match=reason):
+                execute([job], root, client)
+            assert not target.exists()
+            return
+        execute([job], root, client)
+        execute([job], root, client)
+    assert calls == ["GET"]
+    with zipfile.ZipFile(target) as stream:
+        assert list(map(json.loads, stream.read(member).splitlines())) == rows
+    assert validate(target, job) == 1440
+    logs = [json.loads(line) for line in (root / "logs/backfill.jsonl").read_text().splitlines()]
+    assert [log["discarded_orderbook_tail"] for log in logs] == [8, 0]
+    assert [log["records"] for log in logs] == [1440, 1440]
+    assert logs[1]["skipped"] == 1
