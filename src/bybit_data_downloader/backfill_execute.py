@@ -146,16 +146,20 @@ def _validate(path, job, allow_orderbook_tail):
         return count, discarded
 
 
-def publish_orderbook_day(staging, target, count):
+def publish_orderbook_day(staging, target, count, job):
     with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as filtered:
         path = Path(filtered.name)
         try:
             with zipfile.ZipFile(staging) as source, zipfile.ZipFile(filtered, "w", zipfile.ZIP_DEFLATED) as output:
                 member = source.namelist()[0]
                 with source.open(member) as records, output.open(member, "w", force_zip64=True) as day:
-                    day.writelines(islice(records, count))
+                    # Match the scanner's universal newline segmentation, preserving record bytes.
+                    with io.TextIOWrapper(records, newline="") as lines:
+                        day.writelines(line.encode("utf-8") for line in islice(lines, count))
             filtered.flush()
             os.fsync(filtered.fileno())
+            if validate(path, job) != count:
+                raise BackfillDataError("Record count mismatch")
             path.replace(target)
         finally:
             path.unlink(missing_ok=True)
@@ -311,7 +315,7 @@ def execute(jobs, root, client):
                             if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
                             count, discarded = scan(staging, job, allow_orderbook_tail=True)
                             if discarded:
-                                publish_orderbook_day(staging, target, count)
+                                publish_orderbook_day(staging, target, count, job)
                             else:
                                 staging.replace(target)
                         finally: staging.unlink(missing_ok=True)
