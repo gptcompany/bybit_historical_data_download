@@ -326,3 +326,42 @@ def test_orderbook_rewrite_validated_before_publication(tmp_path, monkeypatch, f
     assert not (root / job["path"]).exists()
     assert not list(root.rglob("*.manifest.json"))
     assert not list(root.rglob("*.part"))
+
+
+@pytest.mark.parametrize("defect", [None, "late", "nonterminal", "early"])
+def test_orderbook_structural_eth_tail(tmp_path, defect):
+    # Synthetic minute grid plus the eleven observed ETH tail offsets; no real archive.
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        rows = list(map(json.loads, stream.read("day.data").splitlines()))
+    offsets = [50, 150, 250, 350, 450, 550, 650, 750, 850, 950, 1051]
+    tail = [dict(rows[-1], ts=START + 86400000 + offset,
+                 data=dict(rows[-1]["data"], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate(offsets)]
+    if defect == "late":
+        tail[-1]["ts"] = START + 86400000 + 60001
+    if defect == "nonterminal":
+        rows.append(tail.pop(0))
+    if defect == "early":
+        rows[0]["ts"] = START - 1
+    if defect == "nonterminal":
+        rows.append(dict(rows[0], ts=START + 86399999))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", "\n".join(map(json.dumps, rows + tail)))
+    job["expected_bytes"] = path.stat().st_size
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        if defect:
+            with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+                execute([job], root, client)
+            assert not (root / job["path"]).exists()
+            assert not list(root.rglob("*.manifest.json"))
+            assert not list(root.rglob("*.part"))
+            return
+        execute([job], root, client)
+    assert validate(root / job["path"], job) == 1440
+    log = json.loads((root / "logs/backfill.jsonl").read_text())
+    assert log["discarded_orderbook_tail"] == 11
+    manifest = json.loads((root / job["path"]).with_suffix(".gz.manifest.json").read_text())
+    assert manifest["discarded_orderbook_tail_v1"] == 11
