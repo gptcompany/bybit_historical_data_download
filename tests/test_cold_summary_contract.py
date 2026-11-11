@@ -78,3 +78,56 @@ def test_new_summary_fields_reject_invalid_values(field, value):
     record = json.loads((Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text())
     with pytest.raises(ValidationError):
         deploy.RunSummary.model_validate_json(json.dumps(dict(record, **{field: value})))
+
+
+@pytest.mark.parametrize("scenario", ["success", "plan", "head_failure", "get_failure"])
+def test_retry_events_cross_runner_boundary(scenario, tmp_path, monkeypatch, capsys):
+    from datetime import date
+    from bybit_data_downloader import backfill_retry
+
+    _, archive_path = trade_archive(tmp_path)
+    archive = archive_path.read_bytes()
+    calls = {"HEAD": 0, "GET": 0}
+
+    def respond(request):
+        calls[request.method] += 1
+        if calls[request.method] == 1 or scenario == request.method.lower() + "_failure":
+            raise httpx.ReadTimeout("untrusted upstream detail", request=request)
+        return httpx.Response(200, headers={"Content-Length": str(len(archive))}, content=archive)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(backfill_retry.time, "sleep", lambda _: None)
+    arguments = ["--start-date", "2026-11-09", "--end-date", "2026-11-09", "--symbols", "BTCUSDT",
+                 "--types", "trade", "--data-root", str(tmp_path)]
+    if scenario == "plan":
+        arguments.append("--dry-run")
+    failed = scenario.endswith("failure")
+    if failed:
+        with pytest.raises(httpx.ReadTimeout):
+            backfill.main(arguments)
+    else:
+        backfill.main(arguments)
+    child = capsys.readouterr()
+    events = [json.loads(line) for line in child.err.splitlines()]
+    expected = 1 if scenario == "plan" else 3 if scenario == "get_failure" else 2
+    assert json.loads(child.out)["retries"] == len(events) == expected
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "load_release", lambda *args:
+                        {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
+    monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
+    noise = '\n'.join(["untrusted upstream detail", json.dumps(dict(events[0], extra="reject")),
+                        json.dumps(dict(events[0], wait_seconds=-1)),
+                        json.dumps(dict(events[0], exception="arbitrary text"))])
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=int(failed), stdout=child.out, stderr=child.err + noise))
+    result = deploy.run_backfill(tmp_path, date(2026, 11, 9), date(2026, 11, 9), scenario == "plan")
+    assert result["retries"] == expected
+    assert result["outcome"] == ("failure" if failed else "success")
+    assert [json.loads(line) for line in capsys.readouterr().err.splitlines()] == events
+    log = tmp_path / "logs/backfill.jsonl"
+    if scenario == "plan":
+        assert not log.exists()
+    else:
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        assert [row for row in records if row.get("event") == "retry"] == events
