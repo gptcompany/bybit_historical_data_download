@@ -251,7 +251,7 @@ def test_orderbook_midnight_tail(tmp_path, defect, separator):
     if defect == "early":
         first["ts"] = start - 1
     if defect == "late":
-        tail[-1]["ts"] = start + 86400000 + 1000
+        tail[-1]["ts"] = start + 86400000 + 60001
     if defect == "nonterminal":
         rows.insert(-1, tail.pop(0))
     path = tmp_path / "fixture.zip"
@@ -326,3 +326,113 @@ def test_orderbook_rewrite_validated_before_publication(tmp_path, monkeypatch, f
     assert not (root / job["path"]).exists()
     assert not list(root.rglob("*.manifest.json"))
     assert not list(root.rglob("*.part"))
+
+
+@pytest.mark.parametrize("defect", [None, "late", "nonterminal", "early"])
+def test_orderbook_structural_eth_tail(tmp_path, defect):
+    # Synthetic minute grid plus the eleven observed ETH tail offsets; no real archive.
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        rows = list(map(json.loads, stream.read("day.data").splitlines()))
+    offsets = [50, 150, 250, 350, 450, 550, 650, 750, 850, 950, 1051]
+    tail = [dict(rows[-1], ts=START + 86400000 + offset,
+                 data=dict(rows[-1]["data"], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate(offsets)]
+    if defect == "late":
+        tail[-1]["ts"] = START + 86400000 + 60001
+    if defect == "nonterminal":
+        rows.append(tail.pop(0))
+    if defect == "early":
+        rows[0]["ts"] = START - 1
+    if defect == "nonterminal":
+        rows.append(dict(rows[0], ts=START + 86399999))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", "\n".join(map(json.dumps, rows + tail)))
+    job["expected_bytes"] = path.stat().st_size
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        if defect:
+            with pytest.raises(ValueError, match="Record outside ordered UTC day") as error:
+                execute([job], root, client)
+            expected = {
+                "late": (1451, 11, 60001, 1441),
+                "nonterminal": (1442, 1, 50, 1441),
+                "early": (1, 0, 0, None),
+            }[defect]
+            position, tail_rows, maximum, first_tail = expected
+            for field in (f"position={position}", f"rows_seen={position}",
+                          f"tail_rows={tail_rows}", f"max_offset_ms={maximum}",
+                          f"tail_start={first_tail}", "limit_ms=60000"):
+                assert field in str(error.value)
+            assert not (root / job["path"]).exists()
+            assert not list(root.rglob("*.manifest.json"))
+            assert not list(root.rglob("*.part"))
+            return
+        execute([job], root, client)
+    assert validate(root / job["path"], job) == 1440
+    log = json.loads((root / "logs/backfill.jsonl").read_text())
+    assert log["discarded_orderbook_tail"] == 11
+    manifest = json.loads((root / job["path"]).with_suffix(".gz.manifest.json").read_text())
+    assert manifest["discarded_orderbook_tail_v1"] == 11
+
+
+@pytest.mark.parametrize("limit,offsets,accepted", [
+    (1050, [50, 1051], False), (1051, [50, 1051], True),
+    (60000, [50, 60000], True), (60000, [50, 60001], False),
+    (60000, [1051, 50], False),
+    (86399999, [1051, 86399999], True),
+    (86400000, [1051, 86400000], False),
+    (172800000, [1051, 86400001], False),
+])
+def test_orderbook_configured_tail_limit(tmp_path, limit, offsets, accepted):
+    from bybit_data_downloader.backfill_execute import scan
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = [dict(type="delta", ts=START + 86400000 + offset,
+                 data=dict(s="BTCUSDT", b=[], a=[], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate(offsets)]
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + "\n".join(map(json.dumps, tail)).encode())
+    if accepted:
+        assert scan(path, job, allow_orderbook_tail=True, orderbook_tail_max_ms=limit) == (1440, 2)
+        # A published/cached file must remain strictly within the requested day.
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            validate(path, job)
+    else:
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            scan(path, job, allow_orderbook_tail=True, orderbook_tail_max_ms=limit)
+
+
+@pytest.mark.parametrize("limit", [86400000, 172800000])
+def test_execute_rejects_out_of_range_tail_configuration(tmp_path, limit):
+    from jsonschema import ValidationError
+
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: pytest.fail("configuration must fail before network"))) as client:
+        with pytest.raises(ValidationError, match="maximum"):
+            execute([], tmp_path / "cold", client, orderbook_tail_max_ms=limit)
+
+
+def test_download_rejects_second_day_with_extreme_override(tmp_path):
+    from bybit_data_downloader.backfill_execute import download_file
+
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as stream:
+        records = stream.read("day.data")
+    tail = [dict(type="delta", ts=START + 86400000 + offset,
+                 data=dict(s="BTCUSDT", b=[], a=[], u=1440 + i, seq=1440 + i))
+            for i, offset in enumerate([1051, 86400000])]
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as stream:
+        stream.writestr("day.data", records + b"\n" + "\n".join(map(json.dumps, tail)).encode())
+    job["expected_bytes"] = path.stat().st_size
+    target = tmp_path / "target.gz"
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        with pytest.raises(ValueError, match="Record outside ordered UTC day"):
+            download_file(client, job, target, orderbook_tail_max_ms=86400000)
+    assert not target.exists()
+    assert not list(tmp_path.rglob("*.manifest.json"))
+    assert not list(tmp_path.rglob("*.part"))

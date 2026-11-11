@@ -8,7 +8,8 @@ import httpx
 
 from .backfill_retry import RetryPolicy
 from scripts.cold_deploy import emit
-from .backfill_execute import BackfillDataError, execute, record_failure, run_stats, write_run_log
+from .backfill_execute import (DAY, ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute,
+                               record_failure, run_stats, write_run_log)
 
 
 TYPES = {"trade", "orderbook", "klines", "funding", "openinterest", "longshortratio"}
@@ -78,10 +79,14 @@ def main(argv=None):
     parser.add_argument("--intervals", default="1m,5m,15m")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--orderbook-tail-max-ms", type=int, default=ORDERBOOK_TAIL_MAX_MS,
+                        help="Maximum final orderbook tail offset past UTC midnight (default: 60000 ms)")
     parser.add_argument("--retry-attempts", type=int, default=RetryPolicy.attempts)
     parser.add_argument("--retry-base-delay", type=float, default=RetryPolicy.base_delay)
     parser.add_argument("--retry-max-delay", type=float, default=RetryPolicy.max_delay)
     args = parser.parse_args(argv)
+    if not 1 <= args.orderbook_tail_max_ms < DAY:
+        parser.error(f"--orderbook-tail-max-ms must be an integer between 1 and {DAY - 1}")
     retry = RetryPolicy(args.retry_attempts, args.retry_base_delay, args.retry_max_delay)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         active_job = {}
@@ -97,6 +102,7 @@ def main(argv=None):
             raise
         if not args.dry_run:
             execute(jobs, args.data_root, client, retry=retry, planning_retries=planning["retries"],
+                    orderbook_tail_max_ms=args.orderbook_tail_max_ms,
                     planning_emission={k: planning[k] for k in ("log_error", "events_not_written") if k in planning})
             return
     result = {"days": (args.end_date - args.start_date).days + 1,

@@ -147,7 +147,8 @@ def test_retry_stderr_fault_does_not_stop_work(phase, operation, tmp_path, monke
     # Planning retry is followed by real execution; an empty API plan tests execution separately.
     if phase == "execution":
         from bybit_data_downloader import backfill_execute
-        def download(*args):
+        def download(*args, orderbook_tail_max_ms):
+            assert orderbook_tail_max_ms == 60000
             if not calls:
                 calls.append("GET")
                 raise httpx.ReadTimeout("untrusted detail")
