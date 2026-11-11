@@ -1,6 +1,5 @@
 """Exercise emitted child JSON against the runner's closed schemas, offline in CI."""
 import errno
-import gzip
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +10,13 @@ from pydantic import ValidationError
 
 from bybit_data_downloader import backfill
 from scripts import cold_deploy as deploy
+from test_backfill_execute import archive as trade_archive
 
 
 @pytest.mark.parametrize("scenario", ["success", "get404", "head404", "invalid", "log", "plan"])
 def test_child_output_contract(scenario, tmp_path, monkeypatch, capsys):
-    archive = gzip.compress((Path(__file__).parent / "fixtures/btc-trades-2025-04-02.csv").read_bytes())
+    _, archive_path = trade_archive(tmp_path)
+    archive = archive_path.read_bytes()
 
     def respond(request):
         if scenario == "head404" or (scenario == "get404" and request.method == "GET"):
@@ -34,7 +35,7 @@ def test_child_output_contract(scenario, tmp_path, monkeypatch, capsys):
             return original_open(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", open_path)
-    arguments = ["--start-date", "2025-04-02", "--end-date", "2025-04-02",
+    arguments = ["--start-date", "2026-11-09", "--end-date", "2026-11-09",
                  "--symbols", "BTCUSDT", "--types", "invalid" if scenario == "invalid" else "trade",
                  "--data-root", str(tmp_path)]
     if scenario == "plan":
@@ -61,7 +62,7 @@ def test_child_output_contract(scenario, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs:
                         SimpleNamespace(returncode=int(failed), stdout=output))
     from datetime import date
-    result = deploy.run_backfill(tmp_path, date(2025, 4, 2), date(2025, 4, 2), scenario == "plan")
+    result = deploy.run_backfill(tmp_path, date(2026, 11, 9), date(2026, 11, 9), scenario == "plan")
     for key, value in record.items():
         assert result[key] == value
     assert result["outcome"] == ("failure" if failed else "success")
