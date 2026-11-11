@@ -173,3 +173,8 @@ per il journal e li aggiunge a `logs/backfill.jsonl`; scarta ogni altro testo
 stderr del container. Il dry-run inoltra gli eventi senza scrivere il log.
 L'inoltro avviene al termine del container, perché il runner ne cattura l'output.
 I riepiloghi delle immagini precedenti restano validi con contatore assente.
+Gli eventi validi vengono inoltrati anche se manca il riepilogo finale del
+container: l'esito resta `InvalidRunSummary`, con conteggi unknown/null.
+Un errore di persistenza host imposta failure e `log_error`, conserva fase,
+conteggi e metadati del riepilogo validato e lascia proseguire tutti gli eventi
+verso il journal.

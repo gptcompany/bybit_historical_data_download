@@ -274,6 +274,7 @@ class RetryEvent(ClosedRecord):
 
 
 def forward_retries(stderr, config, dry_run):
+    log_error = None
     for line in stderr.splitlines():
         try:
             event = RetryEvent.model_validate_json(line).model_dump_json()
@@ -281,12 +282,16 @@ def forward_retries(stderr, config, dry_run):
             continue
         print(event, file=sys.stderr, flush=True)
         if not dry_run:
-            log = Path(config['cold_root']) / 'logs/backfill.jsonl'
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open('a') as stream:
-                stream.write(event + '\n')
-                stream.flush()
-                os.fsync(stream.fileno())
+            try:
+                log = Path(config['cold_root']) / 'logs/backfill.jsonl'
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open('a') as stream:
+                    stream.write(event + '\n')
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as error:
+                log_error = type(error).__name__
+    return log_error
 
 
 def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
@@ -309,19 +314,19 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     unknown['returncode'] = completed.returncode
     if completed.returncode in (125, 126, 127):
         return dict(unknown, counts_status='not_started', error='ContainerNotStarted')
+    log_error = forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
+    log_failure = dict(outcome='failure', log_error=log_error) if log_error else {}
     try:
         if dry_run and completed.returncode == 0:
             plan = PlanSummary.model_validate_json(completed.stdout).model_dump(mode='json')
-            forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
-            return dict(plan, **metadata, outcome='success', phase='planning')
+            return dict(plan, **metadata, outcome='success', phase='planning') | log_failure
         RunSummary.model_validate_json(completed.stdout)
         summary = json.loads(completed.stdout)  # Preserve the validated child's timestamp spelling.
         if (completed.returncode == 0) != (summary['outcome'] == 'success'):
             raise ValueError('Child exit status contradicts summary')
     except ValueError:
-        return dict(unknown, counts_status='unknown', error='InvalidRunSummary')
-    forward_retries(getattr(completed, 'stderr', b''), config, dry_run)
-    return dict(summary, **metadata, counts_status='reported')
+        return dict(unknown, counts_status='unknown', error='InvalidRunSummary') | log_failure
+    return dict(summary, **metadata, counts_status='reported') | log_failure
 
 
 def main(argv=None):
