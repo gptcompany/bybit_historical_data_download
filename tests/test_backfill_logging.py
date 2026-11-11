@@ -1,8 +1,10 @@
 """Run failures before download must remain observable without archive access."""
+import errno
 import fcntl
 import json
 import runpy
 import sys
+import zipfile
 
 import httpx
 import pytest
@@ -151,3 +153,40 @@ def test_execution_failure_reports_failed_job_without_upstream_values(tmp_path, 
     )
     assert "fixture-secret" not in json.dumps(record)
     assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
+
+
+@pytest.mark.parametrize(("error", "message"), [
+    (json.JSONDecodeError("fixture-secret", "fixture-secret", 0), "Invalid JSON at line 1, column 1"),
+    (zipfile.BadZipFile("fixture-secret"), "Invalid ZIP archive"),
+    (EOFError("fixture-secret"), "Unexpected end of archive"),
+    (ValueError("fixture-secret"), "Execution failed (ValueError)"),
+])
+def test_untrusted_exception_text_is_omitted(tmp_path, capsys, error, message):
+    job = dict(day="2026-11-09", symbol="BTCUSDT", type="trade", source="archive",
+               path="historical/day.gz", url="https://example.test/day", expected_bytes=None)
+
+    def respond(request):
+        raise error
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(type(error)):
+            execute([job], tmp_path, client)
+    record = failure_record(capsys)
+    assert record["error_message"] == message
+    assert "fixture-secret" not in json.dumps(record)
+    assert json.loads((tmp_path / "logs/backfill.jsonl").read_text()) == record
+
+
+def test_logging_failure_reports_when_no_job_failed(tmp_path, monkeypatch, capsys):
+    def failed_sync(fd):
+        raise OSError(errno.ENOSPC, "fixture-secret")
+
+    monkeypatch.setattr("bybit_data_downloader.backfill_execute.os.fsync", failed_sync)
+    with httpx.Client(transport=httpx.MockTransport(lambda r: pytest.fail("No HTTP"))) as client:
+        with pytest.raises(OSError):
+            execute([], tmp_path, client)
+    record = failure_record(capsys)
+    assert record["log_error"] == "OSError"
+    assert "space" in record["error_message"].lower()
+    assert record["error_target"] is None
+    assert "fixture-secret" not in json.dumps(record)

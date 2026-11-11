@@ -15,10 +15,17 @@ from decimal import Decimal, DecimalException
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
 DAY = 86400000
+TRADE_V1_FIELDS = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
+TRADE_V2_FIELDS = TRADE_V1_FIELDS + ["RPI"]
 NUMBER = {"type": "string", "pattern": r"^-?[0-9]+(?:\.[0-9]+)?$"}
+
+
+class BackfillDataError(ValueError):
+    """Validation failures whose messages contain only backfill-owned text."""
 
 
 def object_schema(properties, required=None):
@@ -34,14 +41,14 @@ def bounds(job):
 def positive(value, zero=False):
     number = Decimal(value)
     if not number.is_finite() or number < 0 or (not zero and number == 0):
-        raise ValueError("Invalid numeric value")
+        raise BackfillDataError("Invalid numeric value")
 
 
 def validate(path, job):
     try:
         return _validate(path, job)
     except (DecimalException, csv.Error, zlib.error) as error:
-        raise ValueError("Invalid archive record or compressed stream") from error
+        raise BackfillDataError("Invalid archive record or compressed stream") from error
 
 
 def _validate(path, job):
@@ -60,23 +67,23 @@ def _validate(path, job):
             if kind == "openinterest": properties["singleOpenInterest"] = NUMBER
             schema = object_schema(properties, fields)
             if kind == "funding" and job["symbol"] not in {"BTCUSDT", "ETHUSDT"}:
-                raise ValueError("No verified historical funding grid for this symbol")
+                raise BackfillDataError("No verified historical funding grid for this symbol")
             step = 28800000 if kind == "funding" else DAY
         Draft202012Validator({"type": "array", "items": schema}).validate(rows)
         times = [int(row[0] if kind == "klines" else row[
             "fundingRateTimestamp" if kind == "funding" else "timestamp"]) for row in rows]
         if sorted(times) != list(range(start, end, step)):
-            raise ValueError("Incomplete or duplicate UTC grid")
+            raise BackfillDataError("Incomplete or duplicate UTC grid")
         for row in rows:
             values = row[1:] if kind == "klines" else [v for k, v in row.items() if k not in {"symbol", "timestamp", "fundingRateTimestamp"}]
             for value in values:
                 if kind != "funding": positive(value, zero=True)
             if kind == "longshortratio" and abs(Decimal(row["buyRatio"]) + Decimal(row["sellRatio"]) - 1) > Decimal("0.000001"):
-                raise ValueError("Invalid account ratio sum")
+                raise BackfillDataError("Invalid account ratio sum")
             if kind == "klines":
                 for value in row[1:5]: positive(value)
             if kind == "klines" and not (Decimal(row[3]) <= min(Decimal(row[1]), Decimal(row[4])) <= max(Decimal(row[1]), Decimal(row[4])) <= Decimal(row[2])):
-                raise ValueError("Invalid candle range")
+                raise BackfillDataError("Invalid candle range")
         return len(rows)
     # SQLite bounds memory for millions of trade IDs; this database is disposable.
     with tempfile.TemporaryDirectory(dir=path.parent) as scratch, sqlite3.connect(Path(scratch) / "ids") as ids:
@@ -85,21 +92,24 @@ def _validate(path, job):
         def accept(timestamp, identity):
             nonlocal previous, count
             if not start <= timestamp < end or timestamp < previous:
-                raise ValueError("Record outside ordered UTC day")
+                raise BackfillDataError("Record outside ordered UTC day")
             try: ids.execute("INSERT INTO seen VALUES (?)", (identity,))
-            except sqlite3.IntegrityError: raise ValueError("Duplicate record ID") from None
+            except sqlite3.IntegrityError: raise BackfillDataError("Duplicate record ID") from None
             minutes.add(int((timestamp - start) // 60000))
             previous, count = timestamp, count + 1
         if job["type"] == "trade":
             with gzip.open(path, "rt", newline="") as stream:
                 reader = csv.DictReader(stream, strict=True)
-                fields = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
-                if reader.fieldnames != fields: raise ValueError("Unexpected trade schema")
+                fields = reader.fieldnames
+                if fields not in (TRADE_V1_FIELDS, TRADE_V2_FIELDS):
+                    raise BackfillDataError("Unexpected trade schema")
                 for row in reader:
-                    if set(row) != set(fields) or any(value is None for value in row.values()): raise ValueError("Malformed CSV row")
+                    if set(row) != set(fields) or any(value is None for value in row.values()): raise BackfillDataError("Malformed CSV row")
+                    if fields == TRADE_V2_FIELDS and row["RPI"] not in {"0", "1"}:
+                        raise BackfillDataError("Invalid trade RPI")
                     if row["symbol"] != job["symbol"] or row["side"] not in {"Buy", "Sell"} or not row["trdMatchID"]:
-                        raise ValueError("Invalid trade identity")
-                    if row["tickDirection"] not in {"PlusTick", "ZeroPlusTick", "MinusTick", "ZeroMinusTick"}: raise ValueError("Invalid tick direction")
+                        raise BackfillDataError("Invalid trade identity")
+                    if row["tickDirection"] not in {"PlusTick", "ZeroPlusTick", "MinusTick", "ZeroMinusTick"}: raise BackfillDataError("Invalid tick direction")
                     for key in ["size", "price", "grossValue", "homeNotional", "foreignNotional"]: positive(row[key])
                     accept(Decimal(row["timestamp"]) * 1000, row["trdMatchID"])
         else:
@@ -111,16 +121,16 @@ def _validate(path, job):
             validator = Draft202012Validator(schema)
             with zipfile.ZipFile(path) as archive:
                 names = archive.namelist()
-                if len(names) != 1 or not names[0].endswith(".data"): raise ValueError("Unexpected ZIP members")
+                if len(names) != 1 or not names[0].endswith(".data"): raise BackfillDataError("Unexpected ZIP members")
                 with archive.open(names[0]) as stream:
                     for line in io.TextIOWrapper(stream):
                         row = json.loads(line)
                         validator.validate(row)
-                        if count == 0 and row["type"] != "snapshot": raise ValueError("Missing initial snapshot")
+                        if count == 0 and row["type"] != "snapshot": raise BackfillDataError("Missing initial snapshot")
                         for price, size in row["data"]["b"] + row["data"]["a"]:
                             positive(price); positive(size, zero=True)
                         accept(row["ts"], f"{row['ts']}:{row['data']['u']}:{row['data']['seq']}")
-        if minutes != set(range(1440)): raise ValueError("Incomplete archive UTC minute coverage")
+        if minutes != set(range(1440)): raise BackfillDataError("Incomplete archive UTC minute coverage")
         return count
 
 
@@ -143,18 +153,18 @@ def api_rows(client, job):
             "result": result_schema, "retExtInfo": object_schema({}, []), "time": {"type": "integer"}},
             ["retCode", "result"])).validate(body)
         result = body["result"]
-        if result.get("symbol", job["symbol"]) != job["symbol"]: raise ValueError("API symbol mismatch")
+        if result.get("symbol", job["symbol"]) != job["symbol"]: raise BackfillDataError("API symbol mismatch")
         page = result["list"]
         rows.extend(page)
         cursor = result.get("nextPageCursor")
         if cursor:
-            if cursor in cursors: raise ValueError("Repeated API cursor")
+            if cursor in cursors: raise BackfillDataError("Repeated API cursor")
             cursors.add(cursor); params["cursor"] = cursor
         elif kind in {"klines", "funding"} and len(page) == params["limit"]:
             oldest = min(int(row[0] if kind == "klines" else row["fundingRateTimestamp"]) for row in page)
             key = "end" if kind == "klines" else "endTime"
             if oldest <= start: break
-            if oldest > params[key]: raise ValueError("API pagination did not progress")
+            if oldest > params[key]: raise BackfillDataError("API pagination did not progress")
             params[key] = oldest - 1
         else: break
     return rows
@@ -172,6 +182,33 @@ def run_stats(jobs):
                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
 
 
+def record_failure(stats, error, job):
+    # Third-party exception strings can include URLs, response bodies or file paths.
+    if isinstance(error, BackfillDataError):
+        message = str(error)
+    elif isinstance(error, httpx.HTTPStatusError):
+        message = f"HTTP status {error.response.status_code}"
+    elif isinstance(error, ValidationError):
+        schema_path = "/".join(map(str, error.absolute_schema_path))
+        message = f"Schema validation failed at {schema_path}"
+    elif isinstance(error, json.JSONDecodeError):
+        message = f"Invalid JSON at line {error.lineno}, column {error.colno}"
+    elif isinstance(error, gzip.BadGzipFile):
+        message = "Invalid gzip archive"
+    elif isinstance(error, zipfile.BadZipFile):
+        message = "Invalid ZIP archive"
+    elif isinstance(error, EOFError):
+        message = "Unexpected end of archive"
+    elif isinstance(error, OSError) and error.errno is not None:
+        message = os.strerror(error.errno)
+    else:
+        message = f"{stats['phase'].capitalize()} failed ({type(error).__name__})"
+    stats.update(outcome="failure", error="ValueError" if isinstance(error, BackfillDataError) else type(error).__name__,
+                 error_message=message,
+                 error_type=job.get("type"), error_day=job.get("day"),
+                 error_symbol=job.get("symbol"), error_target=job.get("path"))
+
+
 def write_run_log(stats, root):
     """Journal survives unavailable cold storage; persistence errors still fail the run."""
     stats["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -183,7 +220,9 @@ def write_run_log(stats, root):
         with (logs / "backfill.jsonl").open("a") as stream:
             stream.write(json.dumps(stats) + "\n"); stream.flush(); os.fsync(stream.fileno())
     except OSError as error:
-        stats.update(outcome="failure", log_error=type(error).__name__)
+        if stats["outcome"] == "success":
+            record_failure(stats, error, {})
+        stats["log_error"] = type(error).__name__
         raise
     finally:
         print(json.dumps(stats), flush=True)
@@ -192,6 +231,7 @@ def write_run_log(stats, root):
 def execute(jobs, root, client):
     stats = run_stats(jobs)
     stats["phase"] = "execution"
+    job = {}
     try:
         root = Path(root).resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -212,17 +252,18 @@ def execute(jobs, root, client):
                                       integrity={"const": ("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream"})
                         Draft202012Validator(object_schema(fields)).validate(saved)
                         reason = "sha256-mismatch"
-                        if digest(target) != saved["sha256"]: raise ValueError("SHA256 mismatch")
+                        if digest(target) != saved["sha256"]: raise BackfillDataError("SHA256 mismatch")
                         reason = "invalid-cached-records"
-                        if job["expected_bytes"] is not None and target.stat().st_size != job["expected_bytes"]: raise ValueError("Size mismatch")
+                        if job["expected_bytes"] is not None and target.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Size mismatch")
                         count = validate(target, job)
-                        if count != saved["records"]: raise ValueError("Record count mismatch")
+                        if count != saved["records"]: raise BackfillDataError("Record count mismatch")
                     except (ValueError, OSError, EOFError, zipfile.BadZipFile, ValidationError) as error:
                         count = None
                         suffix = ".quarantine." + uuid4().hex
                         for rejected in (target, manifest):
                             if rejected.exists(): rejected.rename(rejected.with_name(rejected.name + suffix))
-                        stats["quarantined"].append(dict(path=job["path"], reason=reason, error=type(error).__name__))
+                        stats["quarantined"].append(dict(path=job["path"], reason=reason, error="ValueError" if isinstance(error, BackfillDataError)
+                                                        else type(error).__name__))
                 if count is None:
                     with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as stream:
                         staging = Path(stream.name)
@@ -233,7 +274,7 @@ def execute(jobs, root, client):
                                     for chunk in response.iter_bytes(): stream.write(chunk)
                             else: stream.write(json.dumps(api_rows(client, job)).encode())
                             stream.flush(); os.fsync(stream.fileno())
-                            if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise ValueError("Archive size mismatch")
+                            if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
                             count = validate(staging, job)
                             staging.replace(target)
                         finally: staging.unlink(missing_ok=True)
@@ -250,7 +291,7 @@ def execute(jobs, root, client):
                 stats["records"] += count
             stats["outcome"] = "success"
     except Exception as error:
-        stats["error"] = type(error).__name__
+        record_failure(stats, error, job)
         raise
     finally:
         write_run_log(stats, root)

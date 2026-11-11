@@ -6,22 +6,24 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
+from .backfill_execute import BackfillDataError, execute, record_failure, run_stats, write_run_log
+
 
 TYPES = {"trade", "orderbook", "klines", "funding", "openinterest", "longshortratio"}
 INTERVALS = {"1m": 1, "5m": 5, "15m": 15}
 API = "https://api.bybit.com/v5/market/"
 
 
-def plan(start, end, symbols, types, intervals, client):
+def plan(start, end, symbols, types, intervals, client, *, active_job=None):
     """Return one deterministic output per UTC day/series, with archive HEAD sizes."""
     if start > end or end >= datetime.now(timezone.utc).date():
-        raise ValueError("Require an ordered range of closed UTC days")
+        raise BackfillDataError("Require an ordered range of closed UTC days")
     if not symbols or any(not re.fullmatch(r"[A-Z0-9]+USDT", s) for s in symbols):
-        raise ValueError("Require linear USDT symbols")
+        raise BackfillDataError("Require linear USDT symbols")
     if not types or not set(types) <= TYPES:
-        raise ValueError("Unknown or empty data types")
+        raise BackfillDataError("Unknown or empty data types")
     if not intervals or not set(intervals) <= INTERVALS.keys():
-        raise ValueError("Supported intervals: 1m,5m,15m")
+        raise BackfillDataError("Supported intervals: 1m,5m,15m")
     jobs = []
     day = start
     while day <= end:
@@ -46,11 +48,16 @@ def plan(start, end, symbols, types, intervals, client):
                                   else f"market_metrics/{kind}/{symbol}")
                         job.update(source="api", url=API + endpoint, path=f"{folder}/{day}.json")
                     if job["source"] == "archive":
+                        if active_job is not None:
+                            active_job.update(job)
                         response = client.head(job["url"])
                         response.raise_for_status()
-                        size = int(response.headers.get("Content-Length", "0"))
+                        try:
+                            size = int(response.headers.get("Content-Length", "0"))
+                        except ValueError:
+                            raise BackfillDataError("Invalid archive size metadata") from None
                         if size <= 0:
-                            raise ValueError(f"Missing archive size: {job['path']}")
+                            raise BackfillDataError("Missing archive size metadata")
                         job["expected_bytes"] = size
                     jobs.append(job)
         day += timedelta(days=1)
@@ -68,14 +75,14 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
-        from .backfill_execute import execute, run_stats, write_run_log
+        active_job = {}
         planning = run_stats([])
         planning.update(phase="planning", start_date=args.start_date.isoformat(), end_date=args.end_date.isoformat())
         try:
             jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
-                        args.types.split(","), args.intervals.split(","), client)
+                        args.types.split(","), args.intervals.split(","), client, active_job=active_job)
         except Exception as error:
-            planning["error"] = type(error).__name__
+            record_failure(planning, error, active_job)
             write_run_log(planning, None if args.dry_run else args.data_root)
             raise
         if not args.dry_run:
