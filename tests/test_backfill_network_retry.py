@@ -55,19 +55,21 @@ def test_transient_budget(phase, failure, persistent, tmp_path, monkeypatch, cap
             execute([job], tmp_path, client)
     if persistent:
         with pytest.raises(httpx.HTTPError): run()
-        summary = json.loads(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        summary = json.loads(captured.out)
         assert summary["outcome"] == "failure" and summary["error_target"]
         assert summary["downloaded"] == summary["skipped"] == 0
         assert len(calls) == 3
         assert not list(tmp_path.rglob("*.manifest.json"))
     else:
         run()
+        captured = capsys.readouterr()
         assert len(calls) == 2
         if phase == "execution":
             assert (tmp_path / job["path"]).read_bytes() == payload
     assert len(waits) == (2 if persistent else 1)
     if failure == 429: assert all(wait >= 7 for wait in waits)
-    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    records = [json.loads(line) for line in captured.err.splitlines()]
     assert len(records) == len(waits)
     assert all(r["event"] == "retry" and r["target"] and r["exception"] for r in records)
     assert [r["attempt"] for r in records] == list(range(1, len(waits) + 1))
