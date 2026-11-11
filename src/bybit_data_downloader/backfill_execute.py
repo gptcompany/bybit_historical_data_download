@@ -12,6 +12,7 @@ import zipfile
 import zlib
 from datetime import datetime, timezone
 from decimal import Decimal, DecimalException
+from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
 DAY = 86400000
+ORDERBOOK_TAIL_V1_MS = 1000
 TRADE_V1_FIELDS = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
 TRADE_V2_FIELDS = TRADE_V1_FIELDS + ["RPI"]
 NUMBER = {"type": "string", "pattern": r"^-?[0-9]+(?:\.[0-9]+)?$"}
@@ -45,13 +47,18 @@ def positive(value, zero=False):
 
 
 def validate(path, job):
+    count, _ = scan(path, job)
+    return count
+
+
+def scan(path, job, *, allow_orderbook_tail=False):
     try:
-        return _validate(path, job)
+        return _validate(path, job, allow_orderbook_tail)
     except (DecimalException, csv.Error, zlib.error) as error:
         raise BackfillDataError("Invalid archive record or compressed stream") from error
 
 
-def _validate(path, job):
+def _validate(path, job, allow_orderbook_tail):
     start, end = bounds(job)
     if job["source"] == "api":
         rows = json.loads(path.read_text())
@@ -84,19 +91,24 @@ def _validate(path, job):
                 for value in row[1:5]: positive(value)
             if kind == "klines" and not (Decimal(row[3]) <= min(Decimal(row[1]), Decimal(row[4])) <= max(Decimal(row[1]), Decimal(row[4])) <= Decimal(row[2])):
                 raise BackfillDataError("Invalid candle range")
-        return len(rows)
+        return len(rows), 0
     # SQLite bounds memory for millions of trade IDs; this database is disposable.
     with tempfile.TemporaryDirectory(dir=path.parent) as scratch, sqlite3.connect(Path(scratch) / "ids") as ids:
         ids.execute("CREATE TABLE seen (id TEXT PRIMARY KEY)")
-        minutes, previous, count = set(), start, 0
+        minutes, previous, count, discarded = set(), start, 0, 0
+        limit = end + ORDERBOOK_TAIL_V1_MS if allow_orderbook_tail and job["type"] == "orderbook" else end
         def accept(timestamp, identity):
-            nonlocal previous, count
-            if not start <= timestamp < end or timestamp < previous:
+            nonlocal previous, count, discarded
+            if not start <= timestamp < limit or timestamp < previous:
                 raise BackfillDataError("Record outside ordered UTC day")
             try: ids.execute("INSERT INTO seen VALUES (?)", (identity,))
             except sqlite3.IntegrityError: raise BackfillDataError("Duplicate record ID") from None
-            minutes.add(int((timestamp - start) // 60000))
-            previous, count = timestamp, count + 1
+            if timestamp < end:
+                minutes.add(int((timestamp - start) // 60000))
+                count += 1
+            else:
+                discarded += 1
+            previous = timestamp
         if job["type"] == "trade":
             with gzip.open(path, "rt", newline="") as stream:
                 reader = csv.DictReader(stream, strict=True)
@@ -131,7 +143,22 @@ def _validate(path, job):
                             positive(price); positive(size, zero=True)
                         accept(row["ts"], f"{row['ts']}:{row['data']['u']}:{row['data']['seq']}")
         if minutes != set(range(1440)): raise BackfillDataError("Incomplete archive UTC minute coverage")
-        return count
+        return count, discarded
+
+
+def publish_orderbook_day(staging, target, count):
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as filtered:
+        path = Path(filtered.name)
+        try:
+            with zipfile.ZipFile(staging) as source, zipfile.ZipFile(filtered, "w", zipfile.ZIP_DEFLATED) as output:
+                member = source.namelist()[0]
+                with source.open(member) as records, output.open(member, "w", force_zip64=True) as day:
+                    day.writelines(islice(records, count))
+            filtered.flush()
+            os.fsync(filtered.fileno())
+            path.replace(target)
+        finally:
+            path.unlink(missing_ok=True)
 
 
 def api_rows(client, job):
@@ -179,6 +206,7 @@ def digest(path):
 
 def run_stats(jobs):
     return dict(outcome="failure", downloaded=0, skipped=0, records=0, quarantined=[], files=len(jobs), timezone="UTC",
+                discarded_orderbook_tail=0,
                 started_at=datetime.now(timezone.utc).isoformat(), days=sorted({job["day"] for job in jobs}))
 
 
@@ -242,6 +270,7 @@ def execute(jobs, root, client):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 manifest = target.with_suffix(target.suffix + ".manifest.json")
                 count = None
+                discarded = 0
                 if target.exists() or manifest.exists():
                     reason = "missing-or-inconsistent-manifest"
                     try:
@@ -250,11 +279,16 @@ def execute(jobs, root, client):
                         fields.update(complete={"const": True}, records={"type": "integer", "minimum": 1},
                                       sha256={"type": "string", "pattern": "^[0-9a-f]{64}$"},
                                       integrity={"const": ("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream"})
-                        Draft202012Validator(object_schema(fields)).validate(saved)
+                        required = list(fields)
+                        if job["type"] == "orderbook":
+                            fields["discarded_orderbook_tail_v1"] = {"type": "integer", "minimum": 1}
+                        Draft202012Validator(object_schema(fields, required)).validate(saved)
                         reason = "sha256-mismatch"
                         if digest(target) != saved["sha256"]: raise BackfillDataError("SHA256 mismatch")
                         reason = "invalid-cached-records"
-                        if job["expected_bytes"] is not None and target.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Size mismatch")
+                        discarded = saved.get("discarded_orderbook_tail_v1", 0)
+                        if not discarded and job["expected_bytes"] is not None and target.stat().st_size != job["expected_bytes"]:
+                            raise BackfillDataError("Size mismatch")
                         count = validate(target, job)
                         if count != saved["records"]: raise BackfillDataError("Record count mismatch")
                     except (ValueError, OSError, EOFError, zipfile.BadZipFile, ValidationError) as error:
@@ -275,13 +309,19 @@ def execute(jobs, root, client):
                             else: stream.write(json.dumps(api_rows(client, job)).encode())
                             stream.flush(); os.fsync(stream.fileno())
                             if job["expected_bytes"] is not None and staging.stat().st_size != job["expected_bytes"]: raise BackfillDataError("Archive size mismatch")
-                            count = validate(staging, job)
-                            staging.replace(target)
+                            count, discarded = scan(staging, job, allow_orderbook_tail=True)
+                            if discarded:
+                                publish_orderbook_day(staging, target, count)
+                            else:
+                                staging.replace(target)
                         finally: staging.unlink(missing_ok=True)
+                    stats["discarded_orderbook_tail"] += discarded
                     stats["downloaded"] += 1
                 else: stats["skipped"] += 1
                 data = dict(job, complete=True, records=count, sha256=digest(target),
                             integrity=("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream")
+                if discarded:
+                    data["discarded_orderbook_tail_v1"] = discarded
                 with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, delete=False) as stream:
                     temporary = Path(stream.name)
                     try:
