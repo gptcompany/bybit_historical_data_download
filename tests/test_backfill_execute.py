@@ -471,3 +471,31 @@ def test_orderbook_snapshot_delta_identity(tmp_path, conflicting, at_tail):
                 assert manifest["discarded_orderbook_tail_v1"] == 2
             else:
                 assert (root / job["path"]).read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["trade", "orderbook"])
+@pytest.mark.parametrize("defect", [None, "duplicate", "gap"])
+def test_id_validation_characterization(tmp_path, kind, defect):
+    job, path = archive(tmp_path, kind)
+    if kind == "trade":
+        rows = gzip.decompress(path.read_bytes()).decode().splitlines()
+        if defect == "duplicate":
+            rows[-1] = rows[-1].replace(",1439,", ",0,")
+        if defect == "gap":
+            rows.pop(721)
+        path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode()))
+    else:
+        with zipfile.ZipFile(path) as source:
+            rows = source.read("day.data").decode().splitlines()
+        if defect == "duplicate":
+            rows.insert(1, rows[0])
+        if defect == "gap":
+            rows.pop(720)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+            output.writestr("day.data", "\n".join(rows))
+    if defect:
+        message = "Duplicate record ID" if defect == "duplicate" else "Incomplete archive UTC minute coverage"
+        with pytest.raises(ValueError, match=message):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
