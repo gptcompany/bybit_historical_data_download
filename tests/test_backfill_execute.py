@@ -436,3 +436,28 @@ def test_download_rejects_second_day_with_extreme_override(tmp_path):
     assert not target.exists()
     assert not list(tmp_path.rglob("*.manifest.json"))
     assert not list(tmp_path.rglob("*.part"))
+
+
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_orderbook_repeated_identity(tmp_path, conflicting):
+    job, path = archive(tmp_path, "orderbook")
+    with zipfile.ZipFile(path) as source:
+        lines = source.read("day.data").decode().splitlines()
+    repeated = json.loads(lines[50])
+    if conflicting:
+        repeated["data"]["b"][0][1] = "2"
+    lines.insert(51, json.dumps(repeated, sort_keys=True))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as target:
+        target.writestr("day.data", "\n".join(lines))
+    job["expected_bytes"] = path.stat().st_size
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=path.read_bytes()))) as client:
+        if conflicting:
+            with pytest.raises(ValueError, match="Duplicate record ID"):
+                execute([job], root, client)
+            assert not (root / job["path"]).exists()
+        else:
+            execute([job], root, client)
+            execute([job], root, client)
+            assert validate(root / job["path"], job) == 1441
+            assert (root / job["path"]).read_bytes() == path.read_bytes()
