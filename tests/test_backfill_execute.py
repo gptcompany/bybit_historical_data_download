@@ -439,12 +439,13 @@ def test_download_rejects_second_day_with_extreme_override(tmp_path):
 
 
 @pytest.mark.parametrize("conflicting", [False, True])
-def test_orderbook_repeated_identity(tmp_path, conflicting):
+def test_orderbook_snapshot_delta_identity(tmp_path, conflicting):
     job, path = archive(tmp_path, "orderbook")
     with zipfile.ZipFile(path) as source:
         lines = source.read("day.data").decode().splitlines()
     repeated = json.loads(lines[50])
-    if conflicting:
+    if not conflicting:
+        repeated["type"] = "delta"
         repeated["data"]["b"][0][1] = "2"
     lines.insert(51, json.dumps(repeated, sort_keys=True))
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as target:
