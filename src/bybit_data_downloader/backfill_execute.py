@@ -11,7 +11,7 @@ import sys
 import tempfile
 import zipfile
 import zlib
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, DecimalException
 from itertools import islice
@@ -41,24 +41,22 @@ class BackfillScratchError(RuntimeError):
 
 @contextmanager
 def archive_id_index():
-    resources = ExitStack()
+    archive_error = None
     try:
-        try:
-            scratch_root = os.environ.get("BYBIT_ID_TMPDIR") or tempfile.gettempdir()
-            scratch = resources.enter_context(tempfile.TemporaryDirectory(prefix="bybit-ids-", dir=scratch_root))
-            ids = resources.enter_context(closing(sqlite3.connect(Path(scratch) / "ids")))
-        except (OSError, sqlite3.Error) as error:
-            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
-        try:
-            yield ids
-        except sqlite3.Error as error:
-            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
-    finally:
-        # Close SQLite before removing scratch, including when setup or scanning fails.
-        try:
-            resources.close()
-        except (OSError, sqlite3.Error) as error:
-            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
+        scratch_root = os.environ.get("BYBIT_ID_TMPDIR") or tempfile.gettempdir()
+        with tempfile.TemporaryDirectory(prefix="bybit-ids-", dir=scratch_root) as scratch, closing(
+                sqlite3.connect(Path(scratch) / "ids")) as ids:
+            try:
+                yield ids
+            except OSError as error:
+                # Archive read failures still belong to data validation. A different
+                # error from context cleanup belongs to scratch storage instead.
+                archive_error = error
+                raise
+    except (OSError, sqlite3.Error) as error:
+        if error is archive_error:
+            raise
+        raise BackfillScratchError("Archive ID scratch storage unavailable") from error
 
 
 def object_schema(properties, required=None):
