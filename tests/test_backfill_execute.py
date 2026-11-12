@@ -196,7 +196,7 @@ def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
     assert logs[-1]["quarantined"][0]["reason"]
 
 
-@pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate"])
+@pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate", "gzip-header"])
 def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     job, fixture = archive(tmp_path)
     original = fixture.read_bytes()
@@ -209,6 +209,7 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
         if field == "csv": changed[index] = '"' + rows[index][1:]
         candidate = gzip.compress(("\n".join(changed) + "\n").encode(), mtime=0)
         if field == "deflate": candidate = original[:10] + b"\x07" + original[11:]
+        if field == "gzip-header": candidate = b"XX" + original[2:]
         if len(candidate) == len(original):
             malformed = candidate
             break
@@ -234,7 +235,7 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     log = json.loads((root / "logs/backfill.jsonl").read_text().splitlines()[-1])
     assert (log["outcome"], log["downloaded"], log["skipped"], log["records"]) == ("success", 1, 0, 1440)
     assert log["quarantined"][0]["reason"] == "invalid-cached-records"
-    assert log["quarantined"][0]["error"] == "ValueError"
+    assert log["quarantined"][0]["error"] == ("BadGzipFile" if field == "gzip-header" else "ValueError")
 
 
 @pytest.mark.parametrize(("defect", "separator"), [
