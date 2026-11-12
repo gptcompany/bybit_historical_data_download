@@ -9,6 +9,19 @@ from email.utils import parsedate_to_datetime
 import httpx
 from scripts.cold_deploy import emit
 
+# Public market GETs: https://bybit-exchange.github.io/docs/v5/error
+BYBIT_TRANSIENT = {429, 10000, 10006, 10016}
+
+
+class BybitAPIError(ValueError):
+    """Upstream status without its untrusted message or response body."""
+
+    def __init__(self, code, response):
+        super().__init__(f"Bybit API retCode {code}")
+        self.code = code
+        self.response = response
+
+
 TRANSIENT = (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError)
 
 
@@ -28,13 +41,16 @@ class RetryPolicy:
         for attempt in range(1, self.attempts + 1):
             try:
                 return operation()
-            except (httpx.HTTPStatusError, *TRANSIENT) as error:
-                response = error.response if isinstance(error, httpx.HTTPStatusError) else None
-                if response is not None and response.status_code != 429 and not 500 <= response.status_code <= 599:
+            except (BybitAPIError, httpx.HTTPStatusError, *TRANSIENT) as error:
+                api_error = isinstance(error, BybitAPIError)
+                response = error.response if isinstance(error, (BybitAPIError, httpx.HTTPStatusError)) else None
+                if api_error and error.code not in BYBIT_TRANSIENT:
+                    raise
+                if not api_error and response is not None and response.status_code != 429 and not 500 <= response.status_code <= 599:
                     raise
                 if attempt == self.attempts:
                     raise
-                wait = random.uniform(0, ceiling)
+                wait = ceiling if api_error else random.uniform(0, ceiling)
                 if response is not None and "Retry-After" in response.headers:
                     value = response.headers["Retry-After"]
                     try:

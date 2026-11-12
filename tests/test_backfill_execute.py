@@ -438,16 +438,21 @@ def test_download_rejects_second_day_with_extreme_override(tmp_path):
     assert not list(tmp_path.rglob("*.part"))
 
 
+@pytest.mark.parametrize("at_tail", [False, True])
 @pytest.mark.parametrize("conflicting", [False, True])
-def test_orderbook_snapshot_delta_identity(tmp_path, conflicting):
+def test_orderbook_snapshot_delta_identity(tmp_path, conflicting, at_tail):
     job, path = archive(tmp_path, "orderbook")
     with zipfile.ZipFile(path) as source:
         lines = source.read("day.data").decode().splitlines()
-    repeated = json.loads(lines[50])
+    if at_tail:
+        tail = dict(json.loads(lines[-1]), ts=START + 86400000 + 728)
+        lines.append(json.dumps(tail))
+    position = len(lines) - 1 if at_tail else 50
+    repeated = json.loads(lines[position])
     if not conflicting:
         repeated["type"] = "delta"
         repeated["data"]["b"][0][1] = "2"
-    lines.insert(51, json.dumps(repeated, sort_keys=True))
+    lines.insert(position + 1, json.dumps(repeated, sort_keys=True))
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as target:
         target.writestr("day.data", "\n".join(lines))
     job["expected_bytes"] = path.stat().st_size
@@ -460,5 +465,9 @@ def test_orderbook_snapshot_delta_identity(tmp_path, conflicting):
         else:
             execute([job], root, client)
             execute([job], root, client)
-            assert validate(root / job["path"], job) == 1441
-            assert (root / job["path"]).read_bytes() == path.read_bytes()
+            assert validate(root / job["path"], job) == (1440 if at_tail else 1441)
+            if at_tail:
+                manifest = json.loads((root / job["path"]).with_suffix(".gz.manifest.json").read_text())
+                assert manifest["discarded_orderbook_tail_v1"] == 2
+            else:
+                assert (root / job["path"]).read_bytes() == path.read_bytes()

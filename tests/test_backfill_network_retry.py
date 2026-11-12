@@ -133,7 +133,8 @@ def test_configurable_budget_and_capped_jitter(monkeypatch):
         with pytest.raises(ValueError): RetryPolicy(*values)
 
 
-def test_api_list_restarts_without_duplicate_rows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["network", "retcode"])
+def test_api_list_restarts_without_duplicate_rows(tmp_path, monkeypatch, failure):
     from test_backfill_execute import START
     waits, calls = [], []
     monkeypatch.setattr("time.sleep", waits.append)
@@ -142,7 +143,9 @@ def test_api_list_restarts_without_duplicate_rows(tmp_path, monkeypatch):
     rows = [dict(symbol="BTCUSDT", fundingRate="0.001", fundingRateTimestamp=str(START + i * 28800000)) for i in range(3)]
     def respond(request):
         calls.append(request)
-        if len(calls) == 2: raise httpx.ConnectError("interrupted page")
+        if len(calls) == 2:
+            if failure == "network": raise httpx.ConnectError("interrupted page")
+            return httpx.Response(200, json=dict(retCode=10006, result={}))
         page = [rows[0]] if "cursor" not in request.url.params else rows[1:]
         result = dict(list=page)
         if len(page) == 1: result["nextPageCursor"] = "next"
@@ -153,9 +156,10 @@ def test_api_list_restarts_without_duplicate_rows(tmp_path, monkeypatch):
     assert len(calls) == 4 and len(waits) == 1
 
 
+@pytest.mark.parametrize("header", [None, "7"])
 @pytest.mark.parametrize("code", [429, 10000, 10006, 10016, 10001, 10003, 10005, 123456])
 @pytest.mark.parametrize("persistent", [False, True])
-def test_bybit_retcode_budget(code, persistent, tmp_path, monkeypatch, capsys):
+def test_bybit_retcode_budget(code, persistent, header, tmp_path, monkeypatch, capsys):
     from test_backfill_execute import START
     from jsonschema import ValidationError
     calls, waits = [], []
@@ -169,7 +173,7 @@ def test_bybit_retcode_budget(code, persistent, tmp_path, monkeypatch, capsys):
         calls.append(request)
         body = (dict(retCode=code, retMsg="untrusted upstream text", result={})
                 if persistent or len(calls) == 1 else dict(retCode=0, result=dict(list=rows)))
-        return httpx.Response(200, json=body, headers={"Retry-After": "7"})
+        return httpx.Response(200, json=body, headers={"Retry-After": header} if header else {})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         if persistent or not transient:
             with pytest.raises((ValueError, ValidationError)):
@@ -181,7 +185,7 @@ def test_bybit_retcode_budget(code, persistent, tmp_path, monkeypatch, capsys):
             assert json.loads((tmp_path / job["path"]).read_text()) == rows
     assert len(calls) == (3 if persistent and transient else 2 if transient else 1)
     assert len(waits) == len(calls) - 1
-    assert all(wait >= 7 for wait in waits)
+    assert all(wait >= (7 if header else 1) for wait in waits)
     captured = capsys.readouterr()
     assert "untrusted upstream text" not in captured.out + captured.err
     if persistent and transient:

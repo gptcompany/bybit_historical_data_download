@@ -20,7 +20,7 @@ from uuid import uuid4
 import httpx
 from jsonschema import Draft202012Validator, ValidationError
 
-from .backfill_retry import RetryPolicy
+from .backfill_retry import BybitAPIError, RetryPolicy
 from scripts.cold_deploy import emit
 
 DAY = 86400000
@@ -157,7 +157,8 @@ def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
                         if count == 0 and row["type"] != "snapshot": raise BackfillDataError("Missing initial snapshot")
                         for price, size in row["data"]["b"] + row["data"]["a"]:
                             positive(price); positive(size, zero=True)
-                        accept(row["ts"], f"{row['ts']}:{row['data']['u']}:{row['data']['seq']}")
+                        # A snapshot and delta can describe the same exchange update.
+                        accept(row["ts"], f"{row['type']}:{row['ts']}:{row['data']['u']}:{row['data']['seq']}")
         if minutes != set(range(1440)): raise BackfillDataError("Incomplete archive UTC minute coverage")
         return count, discarded
 
@@ -196,10 +197,13 @@ def api_rows(client, job):
         body = response.json()
         result_schema = object_schema({"category": {"const": "linear"}, "symbol": {"const": job["symbol"]},
             "list": {"type": "array"}, "nextPageCursor": {"type": "string"}}, ["list"])
-        Draft202012Validator(object_schema({"retCode": {"const": 0}, "retMsg": {"type": "string"},
-            "result": result_schema, "retExtInfo": object_schema({}, []), "time": {"type": "integer"}},
+        Draft202012Validator(object_schema({"retCode": {"type": "integer"}, "retMsg": {"type": "string"},
+            "result": {"type": "object"}, "retExtInfo": object_schema({}, []), "time": {"type": "integer"}},
             ["retCode", "result"])).validate(body)
+        if body["retCode"] != 0:
+            raise BybitAPIError(body["retCode"], response)
         result = body["result"]
+        Draft202012Validator(result_schema).validate(result)
         if result.get("symbol", job["symbol"]) != job["symbol"]: raise BackfillDataError("API symbol mismatch")
         page = result["list"]
         rows.extend(page)
@@ -232,7 +236,7 @@ def run_stats(jobs):
 
 def record_failure(stats, error, job):
     # Third-party exception strings can include URLs, response bodies or file paths.
-    if isinstance(error, BackfillDataError):
+    if isinstance(error, (BackfillDataError, BybitAPIError)):
         message = str(error)
     elif isinstance(error, httpx.HTTPStatusError):
         message = f"HTTP status {error.response.status_code}"
