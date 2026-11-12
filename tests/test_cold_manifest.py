@@ -15,9 +15,9 @@ def test_real_inventory_pins_the_dell_cold_contract():
     config = inventory(json.loads((ROOT / 'deploy/cold.json').read_bytes()))
     assert config['image'] == (
         'ghcr.io/gptcompany/bybit-downloader@sha256:'
-        'b639d7a459f2cf6f26c1d26092a51812cacb9b24e28bafb71196c4ec3034ebf3'
+        '4e66dccdfcd9e3a9febb874ba797531a647e03216fd5db34659cfd1366d7c97a'
     )
-    assert config['image_source_sha'] == '7ff792cffdfec5ded73f0f3d19cb42ce6e240257'
+    assert config['image_source_sha'] == 'f186806cd39fabf0924273f24a4ded8d530770cc'
     assert (config['user'], config['uid'], config['gid']) == ('sam', 1000, 1000)
     assert config['dns'] == ['1.1.1.1', '9.9.9.9']
     assert config['cold_root'] == '/data/cold/12TB/bybit_data_downloader/data'
