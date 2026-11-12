@@ -499,3 +499,33 @@ def test_id_validation_characterization(tmp_path, kind, defect):
             validate(path, job)
     else:
         assert validate(path, job) == 1440
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured):
+    from bybit_data_downloader import backfill_execute as module
+    job, path = archive(tmp_path)
+    fast = tmp_path / "local-volume"
+    fast.mkdir()
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(fast))
+    if configured:
+        monkeypatch.setenv("BYBIT_ID_TMPDIR", str(fast))
+    else:
+        monkeypatch.delenv("BYBIT_ID_TMPDIR", raising=False)
+    connect = module.sqlite3.connect
+    locations = []
+    def capture(database):
+        locations.append(Path(database))
+        return connect(database)
+    monkeypatch.setattr(module.sqlite3, "connect", capture)
+    assert validate(path, job) == 1440
+    assert len(locations) == 1
+    assert locations[0].parent.parent == fast
+    assert not locations[0].exists()
+
+
+def test_id_database_unavailable_volume_fails_closed(tmp_path, monkeypatch):
+    job, path = archive(tmp_path)
+    monkeypatch.setenv("BYBIT_ID_TMPDIR", str(tmp_path / "missing-volume"))
+    with pytest.raises(FileNotFoundError):
+        validate(path, job)
