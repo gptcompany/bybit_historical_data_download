@@ -502,7 +502,8 @@ def test_id_validation_characterization(tmp_path, kind, defect):
 
 
 @pytest.mark.parametrize("configured", [False, True])
-def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured):
+@pytest.mark.parametrize("defect", [None, "duplicate", "gap"])
+def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured, defect):
     from bybit_data_downloader import backfill_execute as module
     job, path = archive(tmp_path)
     fast = tmp_path / "local-volume"
@@ -512,16 +513,32 @@ def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured):
         monkeypatch.setenv("BYBIT_ID_TMPDIR", str(fast))
     else:
         monkeypatch.delenv("BYBIT_ID_TMPDIR", raising=False)
+    if defect:
+        rows = gzip.decompress(path.read_bytes()).decode().splitlines()
+        if defect == "duplicate":
+            rows[-1] = rows[-1].replace(",1439,", ",0,")
+        else:
+            rows.pop(721)
+        path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode()))
     connect = module.sqlite3.connect
-    locations = []
+    locations, connections = [], []
     def capture(database):
         locations.append(Path(database))
-        return connect(database)
+        connection = connect(database)
+        connections.append(connection)
+        return connection
     monkeypatch.setattr(module.sqlite3, "connect", capture)
-    assert validate(path, job) == 1440
+    if defect:
+        with pytest.raises(ValueError):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
     assert len(locations) == 1
     assert locations[0].parent.parent == fast
     assert not locations[0].exists()
+    assert list(fast.iterdir()) == []
+    with pytest.raises(module.sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
 
 
 def test_id_database_unavailable_volume_fails_closed(tmp_path, monkeypatch):
