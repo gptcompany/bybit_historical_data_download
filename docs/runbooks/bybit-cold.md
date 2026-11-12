@@ -46,13 +46,13 @@ B5 lo verifica dopo review, merge e nuova release approvata.
 
 ## Provenienza della build
 
-Build-only B5: [run 43205060752](https://github.com/gptcompany/progressive-deploy/actions/runs/43205060752),
-[job 131138041607](https://github.com/gptcompany/progressive-deploy/actions/runs/43205060752/job/131138041607),
+Build-only B5: [run 43250026334](https://github.com/gptcompany/progressive-deploy/actions/runs/43250026334),
+[job 131292988675](https://github.com/gptcompany/progressive-deploy/actions/runs/43250026334/job/131292988675),
 conclusione success; workflow `build-bybit-downloader-image.yml`, evento `workflow_dispatch`.
-Sorgente immagine: `f186806cd39fabf0924273f24a4ded8d530770cc` (merge #22:
-identità distinte per snapshot/delta order book e retry degli stati transitori Bybit).
+Sorgente immagine: `5819230d2208d747f9453de54c38638b4159bd38` (merge #24:
+database temporaneo degli ID fuori dal cold USB; include #22).
 Immagine approvata, registrata anche nel manifest:
-`ghcr.io/gptcompany/bybit-downloader@sha256:4e66dccdfcd9e3a9febb874ba797531a647e03216fd5db34659cfd1366d7c97a`.
+`ghcr.io/gptcompany/bybit-downloader@sha256:3d507dc5ca304d5ed77e89050969002b51486793763f8f7e4a2969a9b168288b`.
 Run e job verificati tramite API; i log confermano il checkout della sorgente e
 `containerimage.digest` della fase Build and push. Non usare un tag mobile o
 lo SHA del workflow progressive-deploy come sorgente.
