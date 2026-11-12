@@ -544,5 +544,65 @@ def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured, de
 def test_id_database_unavailable_volume_fails_closed(tmp_path, monkeypatch):
     job, path = archive(tmp_path)
     monkeypatch.setenv("BYBIT_ID_TMPDIR", str(tmp_path / "missing-volume"))
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(RuntimeError, match="Archive ID scratch storage unavailable"):
         validate(path, job)
+
+
+@pytest.mark.parametrize("kind", ["trade", "orderbook"])
+@pytest.mark.parametrize("failure", ["missing", "permission", "space", "sqlite-open", "sqlite-write", "cleanup"])
+def test_execute_scratch_failure_preserves_valid_cache(tmp_path, monkeypatch, kind, failure):
+    import errno
+    from bybit_data_downloader import backfill_execute as module
+    job, fixture = archive(tmp_path, kind)
+    original = fixture.read_bytes()
+    calls = []
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(200, content=original)
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        execute([job], root, client)
+        target = root / job["path"]
+        manifest = target.with_suffix(target.suffix + ".manifest.json")
+        before = {path: path.read_bytes() for path in (target, manifest)}
+        fast = tmp_path / "scratch"
+        fast.mkdir()
+        monkeypatch.setenv("BYBIT_ID_TMPDIR", str(fast))
+        if failure == "missing":
+            fast.rmdir()
+        elif failure in {"permission", "space"}:
+            def unavailable(*args, **kwargs):
+                raise OSError(errno.EACCES if failure == "permission" else errno.ENOSPC, "scratch unavailable")
+            monkeypatch.setattr(module.tempfile, "TemporaryDirectory", unavailable)
+        elif failure == "sqlite-open":
+            def unavailable(*args, **kwargs):
+                raise module.sqlite3.OperationalError("unable to open database file")
+            monkeypatch.setattr(module.sqlite3, "connect", unavailable)
+        elif failure == "sqlite-write":
+            class FullConnection(module.sqlite3.Connection):
+                def execute(self, sql, *args):
+                    if sql.startswith("INSERT"):
+                        raise module.sqlite3.OperationalError("database or disk is full")
+                    return super().execute(sql, *args)
+            connect = module.sqlite3.connect
+            monkeypatch.setattr(module.sqlite3, "connect", lambda path: connect(path, factory=FullConnection))
+        else:
+            cleanup = module.tempfile.TemporaryDirectory.cleanup
+            def unavailable(directory):
+                cleanup(directory)
+                raise OSError(errno.EIO, "scratch cleanup failed")
+            monkeypatch.setattr(module.tempfile.TemporaryDirectory, "cleanup", unavailable)
+        with pytest.raises(Exception) as caught:
+            execute([job], root, client)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(target.parent.glob("*.quarantine.*"))
+    assert calls == ["GET"], "Scratch failure must not download a valid cached day"
+    assert isinstance(caught.value, RuntimeError)
+    assert str(caught.value) == "Archive ID scratch storage unavailable"
+    log = json.loads((root / "logs/backfill.jsonl").read_text().splitlines()[-1])
+    assert log["outcome"] == "failure"
+    assert log["error"] == "BackfillScratchError"
+    assert log["error_message"] == "Archive ID scratch storage unavailable"
+    assert log["quarantined"] == [] and log["downloaded"] == 0
+    if fast.exists():
+        assert list(fast.iterdir()) == []
