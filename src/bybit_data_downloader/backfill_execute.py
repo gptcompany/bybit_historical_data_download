@@ -11,6 +11,7 @@ import sys
 import tempfile
 import zipfile
 import zlib
+from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, DecimalException
 from itertools import islice
@@ -96,9 +97,16 @@ def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
             if kind == "klines" and not (Decimal(row[3]) <= min(Decimal(row[1]), Decimal(row[4])) <= max(Decimal(row[1]), Decimal(row[4])) <= Decimal(row[2])):
                 raise BackfillDataError("Invalid candle range")
         return len(rows), 0
-    # SQLite bounds memory for millions of trade IDs; this database is disposable.
-    with tempfile.TemporaryDirectory(dir=path.parent) as scratch, sqlite3.connect(Path(scratch) / "ids") as ids:
-        ids.execute("CREATE TABLE seen (id TEXT PRIMARY KEY)")
+    # Keep random ID-index IO off the cold archive volume. Cache is 64 MiB;
+    # larger days spill to the configured local temporary filesystem.
+    scratch_root = os.environ.get("BYBIT_ID_TMPDIR") or tempfile.gettempdir()
+    with tempfile.TemporaryDirectory(prefix="bybit-ids-", dir=scratch_root) as scratch, closing(
+            sqlite3.connect(Path(scratch) / "ids")) as ids:
+        # Disposable index: no durability required; any error rejects the day.
+        ids.execute("PRAGMA journal_mode=OFF")
+        ids.execute("PRAGMA synchronous=OFF")
+        ids.execute("PRAGMA cache_size=-65536")
+        ids.execute("CREATE TABLE seen (id TEXT PRIMARY KEY) WITHOUT ROWID")
         minutes, previous, count, discarded = set(), start, 0, 0
         tail_allowed = allow_orderbook_tail and job["type"] == "orderbook"
         max_offset, tail_start = 0, None
