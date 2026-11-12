@@ -187,3 +187,44 @@ container: l'esito resta `InvalidRunSummary`, con conteggi unknown/null.
 Un errore di persistenza host imposta failure e `log_error`, conserva fase,
 conteggi e metadati del riepilogo validato e lascia proseguire tutti gli eventi
 verso il journal.
+
+
+## Database temporaneo degli ID (#25)
+
+Se lo scratch non è disponibile (directory assente, permessi, spazio o errore
+SQLite/pulizia), il run fallisce con `BackfillScratchError` e messaggio
+`Archive ID scratch storage unavailable`. Una cache valida e il suo manifest
+restano intatti, senza quarantena né nuovo download. Ripristinare lo storage
+prima del nuovo tentativo; la corruzione dell'archivio continua a causare quarantena.
+
+
+`BYBIT_ID_TMPDIR` configura la directory esistente e scrivibile del database
+SQLite per giorno; assente o vuota usa `tempfile.gettempdir()` (normalmente
+`/tmp`, secondo TMPDIR/TEMP/TMP di Python). Nessun fallback al cold se il percorso
+configurato manca o non è scrivibile: il giorno fallisce senza pubblicazione.
+Il default del servizio è `/tmp` nel container. Sul Dell B5 ha verificato il
+12 novembre 2026 DockerRootDir `/data/4TB/docker-data`, su nvme0n1p1, Samsung
+990 PRO 4TB NVMe: il temporaneo è lì, separato dal cold USB sdf.
+Eventuali cambi del servizio vanno versionati nell'inventario/rendering comune,
+mai con override host. Le invocazioni Python standalone possono impostare
+`BYBIT_ID_TMPDIR` verso un filesystem locale veloce con spazio sufficiente.
+
+La cache SQLite è 64 MiB, oltre al normale overhead SQLite/Python; gli ID non
+stanno in un set illimitato in RAM. Il DB cresce su disco per un solo giorno:
+il 12 novembre il vecchio DB ETHUSDT 2026-08-23 era già a circa 228 MB e ancora
+in crescita (osservazione parziale, non limite massimo). Dimensionare il volume
+per il giorno più grande; la CI riporta anche i byte dei file scratch prima
+della pulizia sul campione da 4,32 milioni di record. Disco pieno resta errore.
+
+Il codice precedente aveva già un'unica transazione, non commit per riga.
+La chiave casuale in `TEXT PRIMARY KEY` manteneva indice e tabella su USB con
+cache SQLite predefinita. Ora `WITHOUT ROWID` mantiene un solo B-tree, la cache
+è esplicita e journal/sincronizzazione sono disabilitati solo per l'indice
+usa e getta. Ogni INSERT mantiene il vincolo UNIQUE: il primo duplicato
+interrompe la validazione. Copertura di tutti i minuti UTC e ordine invariati;
+non si deduce la contiguità dai trade ID casuali, che non sono numeri sequenziali.
+La connessione si chiude prima di rimuovere la directory `bybit-ids-*`, sia a
+successo sia su errore, inclusi duplicati e buchi. Un arresto forzato del processo
+può lasciare temporanei: B5 controlla spazio e residui prima del prossimo run.
+Nessuna modifica a staging o rename atomico degli archivi sul cold.
+Serve rebuild immagine e release approvata da B5; nessun deploy da questa PR.

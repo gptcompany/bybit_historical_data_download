@@ -196,7 +196,7 @@ def test_untrusted_cache_is_quarantined_and_recovered(tmp_path, defect):
     assert logs[-1]["quarantined"][0]["reason"]
 
 
-@pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate"])
+@pytest.mark.parametrize("field", ["price", "timestamp", "csv", "deflate", "gzip-header"])
 def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     job, fixture = archive(tmp_path)
     original = fixture.read_bytes()
@@ -209,6 +209,7 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
         if field == "csv": changed[index] = '"' + rows[index][1:]
         candidate = gzip.compress(("\n".join(changed) + "\n").encode(), mtime=0)
         if field == "deflate": candidate = original[:10] + b"\x07" + original[11:]
+        if field == "gzip-header": candidate = b"XX" + original[2:]
         if len(candidate) == len(original):
             malformed = candidate
             break
@@ -234,7 +235,7 @@ def test_parse_failure_quarantines_coherent_archive_cache(tmp_path, field):
     log = json.loads((root / "logs/backfill.jsonl").read_text().splitlines()[-1])
     assert (log["outcome"], log["downloaded"], log["skipped"], log["records"]) == ("success", 1, 0, 1440)
     assert log["quarantined"][0]["reason"] == "invalid-cached-records"
-    assert log["quarantined"][0]["error"] == "ValueError"
+    assert log["quarantined"][0]["error"] == ("BadGzipFile" if field == "gzip-header" else "ValueError")
 
 
 @pytest.mark.parametrize(("defect", "separator"), [
@@ -471,3 +472,138 @@ def test_orderbook_snapshot_delta_identity(tmp_path, conflicting, at_tail):
                 assert manifest["discarded_orderbook_tail_v1"] == 2
             else:
                 assert (root / job["path"]).read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize("kind", ["trade", "orderbook"])
+@pytest.mark.parametrize("defect", [None, "duplicate", "gap"])
+def test_id_validation_characterization(tmp_path, kind, defect):
+    job, path = archive(tmp_path, kind)
+    if kind == "trade":
+        rows = gzip.decompress(path.read_bytes()).decode().splitlines()
+        if defect == "duplicate":
+            rows[-1] = rows[-1].replace(",1439,", ",0,")
+        if defect == "gap":
+            rows.pop(721)
+        path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode()))
+    else:
+        with zipfile.ZipFile(path) as source:
+            rows = source.read("day.data").decode().splitlines()
+        if defect == "duplicate":
+            rows.insert(1, rows[0])
+        if defect == "gap":
+            rows.pop(720)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+            output.writestr("day.data", "\n".join(rows))
+    if defect:
+        message = "Duplicate record ID" if defect == "duplicate" else "Incomplete archive UTC minute coverage"
+        with pytest.raises(ValueError, match=message):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("defect", [None, "duplicate", "gap"])
+def test_id_database_uses_temporary_volume(tmp_path, monkeypatch, configured, defect):
+    from bybit_data_downloader import backfill_execute as module
+    job, path = archive(tmp_path)
+    fast = tmp_path / "local-volume"
+    fast.mkdir()
+    monkeypatch.setattr(module.tempfile, "gettempdir", lambda: str(fast))
+    if configured:
+        monkeypatch.setenv("BYBIT_ID_TMPDIR", str(fast))
+    else:
+        monkeypatch.delenv("BYBIT_ID_TMPDIR", raising=False)
+    if defect:
+        rows = gzip.decompress(path.read_bytes()).decode().splitlines()
+        if defect == "duplicate":
+            rows[-1] = rows[-1].replace(",1439,", ",0,")
+        else:
+            rows.pop(721)
+        path.write_bytes(gzip.compress(("\n".join(rows) + "\n").encode()))
+    connect = module.sqlite3.connect
+    locations, connections = [], []
+    def capture(database):
+        locations.append(Path(database))
+        connection = connect(database)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(module.sqlite3, "connect", capture)
+    if defect:
+        with pytest.raises(ValueError):
+            validate(path, job)
+    else:
+        assert validate(path, job) == 1440
+    assert len(locations) == 1
+    assert locations[0].parent.parent == fast
+    assert not locations[0].exists()
+    assert list(fast.iterdir()) == []
+    with pytest.raises(module.sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+
+
+def test_id_database_unavailable_volume_fails_closed(tmp_path, monkeypatch):
+    job, path = archive(tmp_path)
+    monkeypatch.setenv("BYBIT_ID_TMPDIR", str(tmp_path / "missing-volume"))
+    with pytest.raises(RuntimeError, match="Archive ID scratch storage unavailable"):
+        validate(path, job)
+
+
+@pytest.mark.parametrize("kind", ["trade", "orderbook"])
+@pytest.mark.parametrize("failure", ["missing", "permission", "space", "sqlite-open", "sqlite-write", "cleanup"])
+def test_execute_scratch_failure_preserves_valid_cache(tmp_path, monkeypatch, kind, failure):
+    import errno
+    from bybit_data_downloader import backfill_execute as module
+    job, fixture = archive(tmp_path, kind)
+    original = fixture.read_bytes()
+    calls = []
+    def respond(request):
+        calls.append(request.method)
+        return httpx.Response(200, content=original)
+    root = tmp_path / "cold"
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        execute([job], root, client)
+        target = root / job["path"]
+        manifest = target.with_suffix(target.suffix + ".manifest.json")
+        before = {path: path.read_bytes() for path in (target, manifest)}
+        fast = tmp_path / "scratch"
+        fast.mkdir()
+        monkeypatch.setenv("BYBIT_ID_TMPDIR", str(fast))
+        if failure == "missing":
+            fast.rmdir()
+        elif failure in {"permission", "space"}:
+            def unavailable(*args, **kwargs):
+                raise OSError(errno.EACCES if failure == "permission" else errno.ENOSPC, "scratch unavailable")
+            monkeypatch.setattr(module.tempfile, "TemporaryDirectory", unavailable)
+        elif failure == "sqlite-open":
+            def unavailable(*args, **kwargs):
+                raise module.sqlite3.OperationalError("unable to open database file")
+            monkeypatch.setattr(module.sqlite3, "connect", unavailable)
+        elif failure == "sqlite-write":
+            class FullConnection(module.sqlite3.Connection):
+                def execute(self, sql, *args):
+                    if sql.startswith("INSERT"):
+                        raise module.sqlite3.OperationalError("database or disk is full")
+                    return super().execute(sql, *args)
+            connect = module.sqlite3.connect
+            monkeypatch.setattr(module.sqlite3, "connect", lambda path: connect(path, factory=FullConnection))
+        else:
+            cleanup = module.tempfile.TemporaryDirectory.cleanup
+            def unavailable(directory):
+                cleanup(directory)
+                raise OSError(errno.EIO, "scratch cleanup failed")
+            monkeypatch.setattr(module.tempfile.TemporaryDirectory, "cleanup", unavailable)
+        with pytest.raises(Exception) as caught:
+            execute([job], root, client)
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(target.parent.glob("*.quarantine.*"))
+    assert calls == ["GET"], "Scratch failure must not download a valid cached day"
+    assert isinstance(caught.value, RuntimeError)
+    assert str(caught.value) == "Archive ID scratch storage unavailable"
+    log = json.loads((root / "logs/backfill.jsonl").read_text().splitlines()[-1])
+    assert log["outcome"] == "failure"
+    assert log["error"] == "BackfillScratchError"
+    assert log["error_message"] == "Archive ID scratch storage unavailable"
+    assert log["quarantined"] == [] and log["downloaded"] == 0
+    if fast.exists():
+        assert list(fast.iterdir()) == []
