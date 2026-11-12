@@ -11,7 +11,7 @@ import sys
 import tempfile
 import zipfile
 import zlib
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal, DecimalException
 from itertools import islice
@@ -33,6 +33,32 @@ NUMBER = {"type": "string", "pattern": r"^-?[0-9]+(?:\.[0-9]+)?$"}
 
 class BackfillDataError(ValueError):
     """Validation failures whose messages contain only backfill-owned text."""
+
+
+class BackfillScratchError(RuntimeError):
+    """Operational failure of disposable ID storage, independent of archive data."""
+
+
+@contextmanager
+def archive_id_index():
+    resources = ExitStack()
+    try:
+        try:
+            scratch_root = os.environ.get("BYBIT_ID_TMPDIR") or tempfile.gettempdir()
+            scratch = resources.enter_context(tempfile.TemporaryDirectory(prefix="bybit-ids-", dir=scratch_root))
+            ids = resources.enter_context(closing(sqlite3.connect(Path(scratch) / "ids")))
+        except (OSError, sqlite3.Error) as error:
+            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
+        try:
+            yield ids
+        except sqlite3.Error as error:
+            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
+    finally:
+        # Close SQLite before removing scratch, including when setup or scanning fails.
+        try:
+            resources.close()
+        except (OSError, sqlite3.Error) as error:
+            raise BackfillScratchError("Archive ID scratch storage unavailable") from error
 
 
 def object_schema(properties, required=None):
@@ -99,9 +125,7 @@ def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
         return len(rows), 0
     # Keep random ID-index IO off the cold archive volume. Cache is 64 MiB;
     # larger days spill to the configured local temporary filesystem.
-    scratch_root = os.environ.get("BYBIT_ID_TMPDIR") or tempfile.gettempdir()
-    with tempfile.TemporaryDirectory(prefix="bybit-ids-", dir=scratch_root) as scratch, closing(
-            sqlite3.connect(Path(scratch) / "ids")) as ids:
+    with archive_id_index() as ids:
         # Disposable index: no durability required; any error rejects the day.
         ids.execute("PRAGMA journal_mode=OFF")
         ids.execute("PRAGMA synchronous=OFF")
@@ -244,7 +268,7 @@ def run_stats(jobs):
 
 def record_failure(stats, error, job):
     # Third-party exception strings can include URLs, response bodies or file paths.
-    if isinstance(error, (BackfillDataError, BybitAPIError)):
+    if isinstance(error, (BackfillDataError, BackfillScratchError, BybitAPIError)):
         message = str(error)
     elif isinstance(error, httpx.HTTPStatusError):
         message = f"HTTP status {error.response.status_code}"

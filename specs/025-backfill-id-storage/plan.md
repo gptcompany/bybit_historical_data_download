@@ -9,3 +9,9 @@
    e dimensioni nel body PR; nessuna misura locale.
 Rischio: spazio locale insufficiente, fallimento chiuso. Analisi: API esclusa,
 nessun caller aggirato, stesso controllo INSERT per riga, memoria non illimitata.
+
+
+Correzione R1: regressioni execute per scratch assente, permessi, spazio,
+apertura/scrittura SQLite e pulizia -> verifica: CI RED sul commit dei test.
+Separazione errori operativi con contextlib, cache intatta senza GET e quarantena
+per corruzione conservata -> verifica: stessi test GREEN, suite e diff coverage CI.

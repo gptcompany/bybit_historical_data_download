@@ -191,6 +191,13 @@ verso il journal.
 
 ## Database temporaneo degli ID (#25)
 
+Se lo scratch non è disponibile (directory assente, permessi, spazio o errore
+SQLite/pulizia), il run fallisce con `BackfillScratchError` e messaggio
+`Archive ID scratch storage unavailable`. Una cache valida e il suo manifest
+restano intatti, senza quarantena né nuovo download. Ripristinare lo storage
+prima del nuovo tentativo; la corruzione dell'archivio continua a causare quarantena.
+
+
 `BYBIT_ID_TMPDIR` configura la directory esistente e scrivibile del database
 SQLite per giorno; assente o vuota usa `tempfile.gettempdir()` (normalmente
 `/tmp`, secondo TMPDIR/TEMP/TMP di Python). Nessun fallback al cold se il percorso
