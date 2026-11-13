@@ -16,10 +16,13 @@ from datetime import datetime, timezone
 from decimal import Decimal, DecimalException
 from itertools import islice
 from pathlib import Path
+from typing import Annotated, List, Literal
 from uuid import uuid4
 
 import httpx
 from jsonschema import Draft202012Validator, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import ValidationError as ModelValidationError
 
 from .backfill_retry import BybitAPIError, RetryPolicy
 from scripts.cold_deploy import emit
@@ -29,6 +32,29 @@ ORDERBOOK_TAIL_MAX_MS = 60000
 TRADE_V1_FIELDS = "timestamp symbol side size price tickDirection trdMatchID grossValue homeNotional foreignNotional".split()
 TRADE_V2_FIELDS = TRADE_V1_FIELDS + ["RPI"]
 NUMBER = {"type": "string", "pattern": r"^-?[0-9]+(?:\.[0-9]+)?$"}
+BookNumber = Annotated[str, StringConstraints(pattern=NUMBER["pattern"])]
+
+
+class StrictBook(BaseModel):
+    """Accepts a subset of the orderbook JSON schema; anything else replays jsonschema."""
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class BookData(StrictBook):
+    s: str
+    b: List[Annotated[List[BookNumber], Field(min_length=2, max_length=2)]]
+    a: List[Annotated[List[BookNumber], Field(min_length=2, max_length=2)]]
+    u: int
+    seq: int
+
+
+class BookRow(StrictBook):
+    type: Literal["snapshot", "delta"]
+    ts: int
+    data: BookData
+    # Non-null defaults: JSON null stays rejected, as with the schema's integer/string.
+    cts: int = 0
+    topic: str = ""
 
 
 class BackfillDataError(ValueError):
@@ -194,15 +220,34 @@ def _validate(path, job, allow_orderbook_tail, orderbook_tail_max_ms):
                 if len(names) != 1 or not names[0].endswith(".data"): raise BackfillDataError("Unexpected ZIP members")
                 with archive.open(names[0]) as stream:
                     for line in io.TextIOWrapper(stream):
-                        row = json.loads(line)
-                        validator.validate(row)
+                        fast = strict_book_row(line)
+                        strict = fast is not None and fast.data.s == job["symbol"]
+                        if strict:
+                            row = dict(type=fast.type, ts=fast.ts, data=dict(b=fast.data.b, a=fast.data.a, u=fast.data.u, seq=fast.data.seq))
+                        else:
+                            # Rejections replay the original path, so errors and schema paths stay identical.
+                            row = json.loads(line)
+                            validator.validate(row)
                         if count == 0 and row["type"] != "snapshot": raise BackfillDataError("Missing initial snapshot")
-                        for price, size in row["data"]["b"] + row["data"]["a"]:
-                            positive(price); positive(size, zero=True)
+                        levels = row["data"]["b"] + row["data"]["a"]
+                        if strict:
+                            # Pattern-checked text: "-" marks a sign and only "-", "." and "0" spell zero.
+                            if any(price[0] == "-" or not price.strip("-.0") or (size[0] == "-" and size.strip("-.0"))
+                                   for price, size in levels): raise BackfillDataError("Invalid numeric value")
+                        else:
+                            for price, size in levels:
+                                positive(price); positive(size, zero=True)
                         # A snapshot and delta can describe the same exchange update.
                         accept(row["ts"], f"{row['type']}:{row['ts']}:{row['data']['u']}:{row['data']['seq']}")
         if minutes != set(range(1440)): raise BackfillDataError("Incomplete archive UTC minute coverage")
         return count, discarded
+
+
+def strict_book_row(line):
+    try:
+        return BookRow.model_validate_json(line)
+    except ModelValidationError:
+        return None
 
 
 def publish_orderbook_day(staging, target, count, job):
