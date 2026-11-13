@@ -454,7 +454,7 @@ def main(argv=None):
                 if start is not None or end is not None: raise ValueError('Run always ends yesterday UTC')
                 end = datetime.now(timezone.utc).date() - timedelta(days=1)
             result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals,
-                                  args.action == 'run', instance=args.action == 'backfill')
+                                  args.action == 'run', args.action == 'backfill')
     except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
                       phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
