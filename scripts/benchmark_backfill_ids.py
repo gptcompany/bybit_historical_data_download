@@ -14,13 +14,18 @@ BASELINE = "b1327edbcbc4da0ad49c527001d8141e0799c1d5"
 ROWS = 4_320_000
 
 
-def main():
+def load_baseline(sha):
     source = subprocess.check_output([
         "git", "--no-replace-objects", "show",
-        f"{BASELINE}:src/bybit_data_downloader/backfill_execute.py",
+        f"{sha}:src/bybit_data_downloader/backfill_execute.py",
     ], text=True)
     baseline = types.ModuleType("bybit_data_downloader._baseline")
     exec(compile(source, "baseline_backfill_execute.py", "exec"), baseline.__dict__)
+    return baseline
+
+
+def main():
+    baseline = load_baseline(BASELINE)
     job = dict(day="2026-08-23", symbol="ETHUSDT", type="trade", source="archive")
     start, _ = backfill_execute.bounds(job)
     rng = random.Random(649)

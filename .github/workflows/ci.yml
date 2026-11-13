@@ -63,6 +63,9 @@ jobs:
       - name: Compare deployed and current archive ID validation
         run: PYTHONPATH=src:. python scripts/benchmark_backfill_ids.py
 
+      - name: Compare deployed and current orderbook validation
+        run: PYTHONPATH=src:. python scripts/benchmark_backfill_orderbook.py
+
       - name: Check changed-line coverage
         run: diff-cover coverage.xml --compare-branch origin/main --fail-under 85
 
