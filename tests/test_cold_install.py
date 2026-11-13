@@ -6,15 +6,19 @@ import sys
 import stat
 import zipfile
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from scripts import cold_deploy as deploy
 from scripts.cold_deploy import drift, install, load_release, render_units
 
 INVENTORY = dict(image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'b' * 64,
                  image_source_sha='c' * 40, user='sam', uid=1000, gid=1000,
                  dns=['1.1.1.1', '9.9.9.9'], cold_root='/data/cold/12TB/bybit_data_downloader/data')
+# systemd-escape --template=bybit-cold-backfill@.service -- '--start-date 2026-06-30'
+INSTANCE = r'bybit-cold-backfill@\x2d\x2dstart\x2ddate\x202026\x2d06\x2d30.service'
 
 
 def git(root, *args):
@@ -31,6 +35,13 @@ def systemd_metadata(tmp_path, monkeypatch):
         if args[0] == 'systemctl':
             assert args[1] == 'show'  # Never enable/start/reload from these fixtures.
             name = args[2]
+            if '*' in name:  # The glob lists every loaded instance; systemctl separates units by a blank line.
+                return subprocess.CompletedProcess(args, 0, '\n'.join(
+                    ''.join(f'{key}={value}\n' for key, value in (dict(
+                        Id=unit, InvocationID='', DropInPaths='', NeedDaemonReload='no',
+                        FragmentPath=str(tmp_path / 'units/bybit-cold-backfill@.service')) | values).items())
+                    for unit, values in overrides.items() if unit.startswith('bybit-cold-backfill@')
+                    and unit != 'bybit-cold-backfill@drift.service'), '')
             values = (dict(FragmentPath=str(tmp_path / 'units' / name.replace('@drift.', '@.')),
                            DropInPaths='', NeedDaemonReload='no') if name.startswith('bybit-cold')
                       else dict(ActiveState='inactive', UnitFileState='masked'))
@@ -135,6 +146,47 @@ def test_drift_checks_backfill_template_through_an_instance(release, tmp_path, s
     systemd_metadata['bybit-cold-backfill@drift.service'] = dict(
         DropInPaths='/etc/systemd/system/bybit-cold-backfill@.service.d/override.conf')
     assert drift(release, units)['mismatches'] == ['bybit-cold-backfill@.service']
+
+
+@pytest.mark.parametrize('change', [dict(FragmentPath='/usr/lib/systemd/system/bybit-cold-backfill@.service'),
+    dict(DropInPaths=f'/etc/systemd/system/{INSTANCE}.d/override.conf'), dict(NeedDaemonReload='yes')])
+def test_drift_checks_every_loaded_backfill_instance(release, tmp_path, systemd_metadata, change):
+    # Template on disk and the synthetic @drift probe conform; only the real instance diverges.
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    systemd_metadata[INSTANCE] = {}
+    assert drift(release, units)['outcome'] == 'success'
+    systemd_metadata[INSTANCE] = change
+    result = drift(release, units)
+    assert result['outcome'] == 'failure' and result['mismatches'] == [INSTANCE]
+
+
+@pytest.mark.parametrize('suffix', ['.d', ''])
+def test_drift_reports_instance_specific_files_even_when_not_loaded(release, tmp_path, suffix):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    if suffix:
+        (units / (INSTANCE + suffix)).mkdir()
+        (units / (INSTANCE + suffix) / 'override.conf').write_text('[Service]\n')
+    else:
+        (units / INSTANCE).write_text('[Service]\n')  # Shadows the template for this instance.
+    assert drift(release, units)['mismatches'] == [INSTANCE + suffix]
+
+
+def test_backfill_preflight_fails_on_an_override_of_its_own_instance(release, tmp_path, systemd_metadata,
+                                                                     monkeypatch):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    monkeypatch.setattr(deploy, 'drift', lambda release, _: drift(release, units))
+    systemd_metadata[INSTANCE] = dict(InvocationID=deploy.os.environ["INVOCATION_ID"],
+                                      DropInPaths=f'/etc/systemd/system/{INSTANCE}.d/override.conf')
+    # The fixture admits only systemctl show and git: a Docker start would raise here.
+    result = deploy.run_backfill(release, date(2026, 6, 30), date(2026, 6, 30))
+    assert result['outcome'] == 'failure' and result['phase'] == 'preflight'
+    assert result['mismatches'] == [INSTANCE] and result['downloaded'] == 0
 
 
 @pytest.mark.parametrize('name', ['bybit-sync.timer', 'bybit-sync-docker.service'])

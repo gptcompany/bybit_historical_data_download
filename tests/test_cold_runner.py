@@ -23,7 +23,9 @@ def container():
 def docker_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(deploy, "load_release", lambda release: CONFIG)
-    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(outcome="success", mismatches=[]))
+    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(
+        outcome="success", mismatches=[], instances=[dict(unit="bybit-cold-backfill@x.service",
+                                                          invocation=deploy.os.environ["INVOCATION_ID"])]))
     def run(command, **kwargs):
         assert command[0] == "/usr/bin/docker"
         assert not kwargs.get("shell", False)
@@ -106,6 +108,18 @@ def test_drift_blocks_container(docker_calls, monkeypatch, capsys):
     assert docker_calls == []
     result = json.loads(capsys.readouterr().out)
     assert result["finding"] == "F-649" and result["phase"] == "preflight"
+    assert result["downloaded"] == result["skipped"] == result["records"] == 0
+
+
+@pytest.mark.parametrize("invocation", [None, "f" * 32])
+def test_backfill_preflight_requires_its_own_instance_among_checked(docker_calls, monkeypatch, capsys, invocation):
+    instances = [] if invocation is None else [dict(unit="bybit-cold-backfill@x.service", invocation=invocation)]
+    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(outcome="success", mismatches=[],
+                                                                     instances=instances))
+    assert deploy.main(["backfill", "/release", "--start-date", "2026-06-30", "--end-date", "2026-06-30"]) == 1
+    assert docker_calls == []
+    result = json.loads(capsys.readouterr().out)
+    assert result["phase"] == "preflight" and result["error"] == "InstanceNotChecked"
     assert result["downloaded"] == result["skipped"] == result["records"] == 0
 
 
