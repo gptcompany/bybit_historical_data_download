@@ -75,7 +75,8 @@ def test_stop_post_stops_only_this_invocation_container(monkeypatch, capsys, lis
     assert calls[0] == ["/usr/bin/docker", "ps", "--all", "--quiet", "--filter", "name=" + name]
     assert calls[1:] == ([["/usr/bin/docker", "stop", name]] if listed else [])
     assert json.loads(capsys.readouterr().out) == dict(outcome="success", finding="F-649", timezone="UTC",
-                                                       container=name, stopped=int(bool(listed)))
+                                                       container=name, stopped=int(bool(listed)),
+                                                       events_not_written=0)
 
 
 def test_stop_post_fails_loudly_when_docker_cannot_list(monkeypatch, capsys):

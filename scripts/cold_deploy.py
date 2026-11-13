@@ -84,7 +84,7 @@ def render_units(config, release):
     # The instance carries the backfill arguments (systemd-escape); "$VAR" splits them at whitespace.
     units[BACKFILL] = (
         f"[Unit]\nDescription=Bybit cold backfill %I\n{docker}\n[Service]\nType=oneshot\n"
-        f'User={config["user"]}\nEnvironment=TZ=UTC\nEnvironment="BYBIT_BACKFILL_ARGS=%I"\n'
+        f'User={config["user"]}\nEnvironment=TZ=UTC "BYBIT_BACKFILL_ARGS=%I"\n'
         f"ExecStart={python} backfill {release} $BYBIT_BACKFILL_ARGS\n"
         f"ExecStopPost={python} reap {release}\n"
         "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")

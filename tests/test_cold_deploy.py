@@ -80,7 +80,7 @@ def test_manual_backfill_template_is_byte_identical_and_session_independent():
         "[Unit]\nDescription=Bybit cold backfill %I\n"
         f"RequiresMountsFor={INVENTORY['cold_root']}\nAfter=docker.service network-online.target\n"
         "Requires=docker.service\nWants=network-online.target\n\n"
-        "[Service]\nType=oneshot\nUser=sam\nEnvironment=TZ=UTC\nEnvironment=\"BYBIT_BACKFILL_ARGS=%I\"\n"
+        "[Service]\nType=oneshot\nUser=sam\nEnvironment=TZ=UTC \"BYBIT_BACKFILL_ARGS=%I\"\n"
         f"ExecStart={python} backfill {RELEASE} $BYBIT_BACKFILL_ARGS\n"
         f"ExecStopPost={python} reap {RELEASE}\n"
         "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")
