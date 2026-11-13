@@ -31,7 +31,7 @@ def systemd_metadata(tmp_path, monkeypatch):
         if args[0] == 'systemctl':
             assert args[1] == 'show'  # Never enable/start/reload from these fixtures.
             name = args[2]
-            values = (dict(FragmentPath=str(tmp_path / 'units' / name),
+            values = (dict(FragmentPath=str(tmp_path / 'units' / name.replace('@drift.', '@.')),
                            DropInPaths='', NeedDaemonReload='no') if name.startswith('bybit-cold')
                       else dict(ActiveState='inactive', UnitFileState='masked'))
             values.update(overrides.get(name, {}))
@@ -79,7 +79,7 @@ def test_install_is_exact_and_retires_both_legacy_schedulers(release, tmp_path):
 
 
 @pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold.timer',
-    'bybit-cold-drift.service', 'bybit-cold-drift.timer', 'bybit-sync.service',
+    'bybit-cold-drift.service', 'bybit-cold-drift.timer', 'bybit-cold-backfill@.service', 'bybit-sync.service',
     'bybit-sync.timer', 'bybit-sync-docker.service', 'bybit-sync-docker.timer'])
 def test_drift_reports_every_modified_or_missing_managed_unit(release, tmp_path, name):
     units = tmp_path / 'units'
@@ -125,6 +125,16 @@ def test_drift_checks_loaded_fragment_dropins_and_reload(release, tmp_path, syst
     result = drift(release, units)
     assert result['outcome'] == 'failure'
     assert result['mismatches'] == ['bybit-cold.service']
+
+
+def test_drift_checks_backfill_template_through_an_instance(release, tmp_path, systemd_metadata):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    assert drift(release, units)['outcome'] == 'success'
+    systemd_metadata['bybit-cold-backfill@drift.service'] = dict(
+        DropInPaths='/etc/systemd/system/bybit-cold-backfill@.service.d/override.conf')
+    assert drift(release, units)['mismatches'] == ['bybit-cold-backfill@.service']
 
 
 @pytest.mark.parametrize('name', ['bybit-sync.timer', 'bybit-sync-docker.service'])
@@ -245,7 +255,7 @@ def test_replace_ref_cannot_substitute_approved_install_or_drift(replaced_releas
         assert drift(release, units)['mismatches'] == ['bybit-cold.timer']
 
 
-@pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold-drift.service'])
+@pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold-drift.service', 'bybit-cold-backfill@.service'])
 def test_rendered_bootstrap_reads_original_script_with_replace_ref(replaced_release, name):
     from configparser import ConfigParser
     parser = ConfigParser(interpolation=None)

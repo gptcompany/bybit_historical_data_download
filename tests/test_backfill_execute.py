@@ -1,5 +1,8 @@
 import csv
+import fcntl
 import gzip
+import os
+import signal
 import io
 import hashlib
 import json
@@ -11,6 +14,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+from bybit_data_downloader import backfill, backfill_execute
 from bybit_data_downloader.backfill_execute import api_rows, execute, validate
 
 
@@ -607,3 +611,41 @@ def test_execute_scratch_failure_preserves_valid_cache(tmp_path, monkeypatch, ki
     assert log["quarantined"] == [] and log["downloaded"] == 0
     if fast.exists():
         assert list(fast.iterdir()) == []
+
+
+@pytest.fixture
+def sigterm_handler():
+    previous = signal.signal(signal.SIGTERM, backfill.terminate)
+    yield
+    signal.signal(signal.SIGTERM, previous)
+
+
+@pytest.mark.parametrize("phase", ["download", "scan"])
+def test_sigterm_removes_staging_and_scratch_without_manifest(tmp_path, monkeypatch, sigterm_handler, phase):
+    job, path = archive(tmp_path)
+    body = path.read_bytes()
+    scratch = tmp_path / "ids"
+    scratch.mkdir()
+    monkeypatch.setenv("BYBIT_ID_TMPDIR", str(scratch))
+    root = tmp_path / "cold"
+    def chunks():
+        yield body[:len(body) // 2]
+        if phase == "download":
+            assert list(root.rglob("*.part"))
+            os.kill(os.getpid(), signal.SIGTERM)
+        yield body[len(body) // 2:]
+    opened = gzip.open
+    def scan_open(*args, **kwargs):
+        assert list(root.rglob("*.part")) and list(scratch.iterdir())
+        os.kill(os.getpid(), signal.SIGTERM)
+        return opened(*args, **kwargs)
+    if phase == "scan":
+        monkeypatch.setattr(backfill_execute.gzip, "open", scan_open)
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, content=chunks()))) as client:
+        with pytest.raises(SystemExit) as stopped:
+            execute([job], root, client)
+    assert stopped.value.code == 128 + signal.SIGTERM
+    assert not list(root.rglob("*.part")) and not list(scratch.iterdir())
+    assert not (root / job["path"]).exists() and not list(root.rglob("*.manifest.json"))
+    with (root / ".backfill.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # Released: the next run can start.
