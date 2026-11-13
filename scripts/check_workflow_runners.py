@@ -9,9 +9,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY_FILE = ROOT / ".github/runner-policy.json"
-# F-491: the org runner group holding sg-ci and dell-ci excludes public repositories, so a public repository job on a
-# self-hosted selector stays queued forever without an error; public repositories get free hosted minutes instead.
-EXPECTED = {"public": "ubuntu-latest", "private": "${{ vars.CI_RUNS_ON }}"}
+# Operator rule 2026-11-13: GitHub-hosted minutes are never counted on, so public repositories run on the self-hosted
+# pool too (this replaces F-491, which kept them on hosted runners while the runner group excluded them). Fork pull
+# requests stay on ubuntu-latest: untrusted fork code never reaches a self-hosted runner.
+FORK_PR = (
+    "(github.event_name == 'pull_request' || github.event_name == 'pull_request_review')"
+    " && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest'"
+)
+EXPECTED = {"public": "${{ " + FORK_PR + " || vars.CI_RUNS_ON || 'sg-ci' }}", "private": "${{ vars.CI_RUNS_ON }}"}
 # Job-level keys from the GitHub Actions workflow syntax; anything else fails closed.
 JOB_KEYS = {
     "name",

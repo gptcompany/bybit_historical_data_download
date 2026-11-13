@@ -78,7 +78,7 @@ success, nessun mismatch; unit byte-identiche al rendering, nessun drop-in,
 NeedDaemonReload=no, FragmentPath esatto, entrambe le coppie legacy masked/inactive.
 Il mount deve esistere sul Dell e contenere i dati cold attesi.
 
-Il timer dati è `bybit-cold.timer`, 03:15 UTC, ieri UTC; quello indipendente di
+Il timer dati è `bybit-cold.timer`, 03:15 UTC, fino a ieri UTC; quello indipendente di
 controllo è `bybit-cold-drift.timer`, 02:45 UTC. B5 abilita/avvia solo dopo la
 verifica. Ogni run dati ripete il gate drift prima di Docker. Una divergenza
 produce finding F-649 e exit nonzero; B5 tratta il journal come finding operativo,
@@ -148,6 +148,18 @@ not_started/null, output non valido unknown/null. Non equiparare null a zero.
 Dopo il backfill B5 verifica success e conteggi dei due run, assenza di serie
 fallite o quarantene irrisolte, e ripete i comandi: downloaded=0, tutte le serie
 skipped e record riverificati. Il primo run del timer deve coprire ieri UTC.
+
+Il run del timer fissa solo la fine (ieri UTC) e passa `--from-last-complete`:
+per ogni serie (simbolo, tipo, intervallo) il figlio legge i manifest nel cold e
+prende il primo giorno mancante dopo il primo giorno completo; l'inizio comune è
+il minimo tra le serie. Conta come completo solo un manifest chiuso, conforme allo
+schema di esecuzione, nel percorso atteso e con il file presente; assenti, in
+quarantena o non validi sono buchi. Senza alcun giorno completo la serie parte da
+ieri. Nessuna finestra o lookback: un giorno mancato (timer fermo, host spento,
+flock occupato) viene recuperato al run successivo, i giorni già validati
+risultano skipped dopo la riverifica di SHA256 e record. Il journal riporta i
+giorni coperti in `days`. Un buco non recuperabile a monte fa fallire ogni run
+finché B5 non lo tratta come finding.
 
 ## Annullamento
 

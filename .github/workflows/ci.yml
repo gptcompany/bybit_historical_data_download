@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || vars.CI_RUNS_ON || 'sg-ci' }}
     permissions:
       contents: read
       id-token: write
@@ -62,6 +62,9 @@ jobs:
 
       - name: Compare deployed and current archive ID validation
         run: PYTHONPATH=src:. python scripts/benchmark_backfill_ids.py
+
+      - name: Compare deployed and current orderbook validation
+        run: PYTHONPATH=src:. python scripts/benchmark_backfill_orderbook.py
 
       - name: Check changed-line coverage
         run: diff-cover coverage.xml --compare-branch origin/main --fail-under 85

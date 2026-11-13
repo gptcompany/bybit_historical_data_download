@@ -37,7 +37,7 @@ def docker_calls(monkeypatch):
     return calls
 
 
-def test_daily_entrypoint_uses_yesterday_utc(docker_calls, monkeypatch, capsys):
+def test_daily_entrypoint_ends_yesterday_utc_and_resumes(docker_calls, monkeypatch, capsys):
     class Clock:
         @staticmethod
         def now(tz):
@@ -46,7 +46,8 @@ def test_daily_entrypoint_uses_yesterday_utc(docker_calls, monkeypatch, capsys):
     monkeypatch.setattr(deploy, "datetime", Clock)
     assert deploy.main(["run", "/release"]) == 0
     command = docker_calls[0]
-    assert command[command.index("--start-date") + 1] == "2026-11-09"
+    # The child resumes every series from its verified manifests; the runner fixes only the end.
+    assert "--from-last-complete" in command and "--start-date" not in command
     assert command[command.index("--end-date") + 1] == "2026-11-09"
     assert CONFIG["image"] in command and "--pull=never" in command
     assert command[command.index("--name") + 1] == container()

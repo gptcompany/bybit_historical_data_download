@@ -1,15 +1,18 @@
 """Cold backfill; --dry-run uses HEAD metadata without reading archive bodies."""
 import argparse
+import json
 import signal
 import sys
 import re
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
+from jsonschema import Draft202012Validator, ValidationError
 
 from .backfill_retry import RetryPolicy
 from scripts.cold_deploy import emit
-from .backfill_execute import (DAY, ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute,
+from .backfill_execute import (DAY, ORDERBOOK_TAIL_MAX_MS, BackfillDataError, execute, manifest_schema,
                                record_failure, run_stats, write_run_log)
 
 
@@ -18,62 +21,109 @@ INTERVALS = {"1m": 1, "5m": 5, "15m": 15}
 API = "https://api.bybit.com/v5/market/"
 
 
-def plan(start, end, symbols, types, intervals, client, *, active_job=None, retry=RetryPolicy(), on_retry=None, emission_state=None):
-    """Return one deterministic output per UTC day/series, with archive HEAD sizes."""
-    if start > end or end >= datetime.now(timezone.utc).date():
-        raise BackfillDataError("Require an ordered range of closed UTC days")
+def selection(symbols, types, intervals):
+    """Validate the request and return its series as (symbol, type, interval) triples."""
     if not symbols or any(not re.fullmatch(r"[A-Z0-9]+USDT", s) for s in symbols):
         raise BackfillDataError("Require linear USDT symbols")
     if not types or not set(types) <= TYPES:
         raise BackfillDataError("Unknown or empty data types")
     if not intervals or not set(intervals) <= INTERVALS.keys():
         raise BackfillDataError("Supported intervals: 1m,5m,15m")
+    return [(symbol, kind, interval) for symbol in sorted(set(symbols)) for kind in sorted(set(types))
+            for interval in (sorted(set(intervals)) if kind == "klines" else [None])]
+
+
+def job_for(day, symbol, kind, interval):
+    """Source and cold path of one UTC series day, without network metadata."""
+    job = {"day": day.isoformat(), "symbol": symbol, "type": kind,
+           "interval": interval, "timezone": "UTC", "expected_bytes": None}
+    if kind == "trade":
+        filename = f"{symbol}{day}.csv.gz"
+        job.update(source="archive", url=f"https://public.bybit.com/trading/{symbol}/{filename}",
+                   path=f"historical/trade/contract/{symbol}/{filename}")
+    elif kind == "orderbook":
+        filename = f"{day}_{symbol}_ob200.data.zip"
+        job.update(source="archive",
+                   url=f"https://quote-saver.bycsi.com/orderbook/linear/{symbol}/{filename}",
+                   path=f"historical/orderbook/contract/{symbol}/{filename}")
+    else:
+        endpoint = {"klines": "kline", "funding": "funding/history",
+                    "openinterest": "open-interest", "longshortratio": "account-ratio"}[kind]
+        folder = (f"historical/klines/linear/{symbol}/{interval}" if kind == "klines"
+                  else f"market_metrics/{kind}/{symbol}")
+        job.update(source="api", url=API + endpoint, path=f"{folder}/{day}.json")
+    return job
+
+
+def complete_days(root, symbol, kind, interval):
+    """Days whose closed manifest matches the series layout and whose file still exists."""
+    days = set()
+    folder = (root / job_for(date.min, symbol, kind, interval)["path"]).parent
+    for manifest in folder.glob("*.manifest.json"):
+        try:
+            saved = json.loads(manifest.read_text())
+            job = job_for(date.fromisoformat(saved["day"]), symbol, kind, interval)
+            target = root / job["path"]
+            schema = manifest_schema(job)
+            # HEAD sizes are not fetched here; execution re-verifies size, SHA256 and records.
+            schema["properties"]["expected_bytes"] = ({"type": "integer", "minimum": 1}
+                                                      if job["source"] == "archive" else {"const": None})
+            Draft202012Validator(schema).validate(saved)
+            if manifest == target.with_suffix(target.suffix + ".manifest.json") and target.is_file():
+                days.add(date.fromisoformat(job["day"]))
+        except (ValueError, TypeError, KeyError, OSError, ValidationError):
+            continue  # Unverifiable manifests never count as complete days.
+    return days
+
+
+def first_incomplete(root, end, series):
+    """Earliest day to fetch: per series, the first gap after its first complete day, else `end`."""
+    start = end
+    for symbol, kind, interval in series:
+        days = complete_days(Path(root), symbol, kind, interval)
+        day = min(days, default=end)
+        while day < start and day in days:
+            day += timedelta(days=1)
+        start = min(start, day)
+    return start
+
+
+def plan(start, end, symbols, types, intervals, client, *, active_job=None, retry=RetryPolicy(), on_retry=None, emission_state=None):
+    """Return one deterministic output per UTC day/series, with archive HEAD sizes."""
+    if start > end or end >= datetime.now(timezone.utc).date():
+        raise BackfillDataError("Require an ordered range of closed UTC days")
+    series = selection(symbols, types, intervals)
     jobs = []
     day = start
     while day <= end:
-        for symbol in sorted(set(symbols)):
-            for kind in sorted(set(types)):
-                for interval in sorted(set(intervals)) if kind == "klines" else [None]:
-                    job = {"day": day.isoformat(), "symbol": symbol, "type": kind,
-                           "interval": interval, "timezone": "UTC", "expected_bytes": None}
-                    if kind == "trade":
-                        filename = f"{symbol}{day}.csv.gz"
-                        job.update(source="archive", url=f"https://public.bybit.com/trading/{symbol}/{filename}",
-                                   path=f"historical/trade/contract/{symbol}/{filename}")
-                    elif kind == "orderbook":
-                        filename = f"{day}_{symbol}_ob200.data.zip"
-                        job.update(source="archive",
-                                   url=f"https://quote-saver.bycsi.com/orderbook/linear/{symbol}/{filename}",
-                                   path=f"historical/orderbook/contract/{symbol}/{filename}")
-                    else:
-                        endpoint = {"klines": "kline", "funding": "funding/history",
-                                    "openinterest": "open-interest", "longshortratio": "account-ratio"}[kind]
-                        folder = (f"historical/klines/linear/{symbol}/{interval}" if kind == "klines"
-                                  else f"market_metrics/{kind}/{symbol}")
-                        job.update(source="api", url=API + endpoint, path=f"{folder}/{day}.json")
-                    if job["source"] == "archive":
-                        if active_job is not None:
-                            active_job.update(job)
-                        def head():
-                            response = client.head(job["url"])
-                            response.raise_for_status()
-                            return response
-                        response = retry.run(head, job["path"], on_retry=on_retry, emission_state=emission_state)
-                        try:
-                            size = int(response.headers.get("Content-Length", "0"))
-                        except ValueError:
-                            raise BackfillDataError("Invalid archive size metadata") from None
-                        if size <= 0:
-                            raise BackfillDataError("Missing archive size metadata")
-                        job["expected_bytes"] = size
-                    jobs.append(job)
+        for symbol, kind, interval in series:
+            job = job_for(day, symbol, kind, interval)
+            if job["source"] == "archive":
+                if active_job is not None:
+                    active_job.update(job)
+                def head():
+                    response = client.head(job["url"])
+                    response.raise_for_status()
+                    return response
+                response = retry.run(head, job["path"], on_retry=on_retry, emission_state=emission_state)
+                try:
+                    size = int(response.headers.get("Content-Length", "0"))
+                except ValueError:
+                    raise BackfillDataError("Invalid archive size metadata") from None
+                if size <= 0:
+                    raise BackfillDataError("Missing archive size metadata")
+                job["expected_bytes"] = size
+            jobs.append(job)
         day += timedelta(days=1)
     return jobs
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--start-date", type=date.fromisoformat, required=True)
+    first = parser.add_mutually_exclusive_group(required=True)
+    first.add_argument("--start-date", type=date.fromisoformat)
+    first.add_argument("--from-last-complete", action="store_true",
+                       help="Start at the earliest series day after its last verified manifest")
     parser.add_argument("--end-date", type=date.fromisoformat, required=True)
     parser.add_argument("--symbols", default="BTCUSDT,ETHUSDT")
     parser.add_argument("--types", default="trade,orderbook,klines,funding,openinterest,longshortratio")
@@ -92,8 +142,12 @@ def main(argv=None):
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         active_job = {}
         planning = run_stats([])
-        planning.update(phase="planning", start_date=args.start_date.isoformat(), end_date=args.end_date.isoformat())
+        planning.update(phase="planning", end_date=args.end_date.isoformat())
         try:
+            if args.from_last_complete:
+                args.start_date = first_incomplete(args.data_root, args.end_date, selection(
+                    args.symbols.split(","), args.types.split(","), args.intervals.split(",")))
+            planning["start_date"] = args.start_date.isoformat()
             jobs = plan(args.start_date, args.end_date, args.symbols.split(","),
                         args.types.split(","), args.intervals.split(","), client, active_job=active_job, retry=retry,
                         on_retry=lambda _: planning.update(retries=planning["retries"] + 1), emission_state=planning)
