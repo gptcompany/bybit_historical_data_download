@@ -77,8 +77,8 @@ def render_units(config, release):
     return units
 
 
-def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None):
-    """Run the cold module explicitly, bypassing the image's legacy live command."""
+def docker_command(config, start: date | None, end: date, dry_run=False, symbols=None, types=None, intervals=None):
+    """Run the cold module explicitly, bypassing the image's legacy live command; no start resumes."""
     config = inventory(config)
     command = ["/usr/bin/docker", "run", "--rm", "--pull=never"]
     for address in config["dns"]:
@@ -86,7 +86,8 @@ def docker_command(config, start: date, end: date, dry_run=False, symbols=None, 
     command += ["--env", "TZ=UTC",
             "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
-            config["image"], "-m", "bybit_data_downloader.backfill", "--start-date", start.isoformat(),
+            config["image"], "-m", "bybit_data_downloader.backfill",
+            *(["--from-last-complete"] if start is None else ["--start-date", start.isoformat()]),
             "--end-date", end.isoformat(), "--data-root", "/data"]
     for flag, value in (("--symbols", symbols), ("--types", types), ("--intervals", intervals)):
         if value is not None: command.extend([flag, value])
@@ -316,16 +317,19 @@ def forward_retries(stderr, config, dry_run):
     return state
 
 
-def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
+def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None, resume=False):
     """Fail closed on drift and emit one validated, enriched container record."""
-    if start is None or end is None or start > end or end >= datetime.now(timezone.utc).date():
+    if (end is None or (start is None) != resume or (start is not None and start > end)
+            or end >= datetime.now(timezone.utc).date()):
         raise ValueError('Require an ordered range of closed UTC days')
     check = drift(release, Path('/etc/systemd/system'))
     if check['outcome'] != 'success':
         return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
     config = load_release(release)
-    metadata = dict(finding='F-649', timezone='UTC', start_date=start.isoformat(), end_date=end.isoformat(),
+    metadata = dict(finding='F-649', timezone='UTC', end_date=end.isoformat(),
                     image=config['image'], image_source_sha=config['image_source_sha'])
+    if start is not None:  # Resumed runs report the start chosen by the child.
+        metadata['start_date'] = start.isoformat()
     unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
     try:
         completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
@@ -379,9 +383,11 @@ def main(argv=None):
         else:
             start, end = args.start_date, args.end_date
             if args.action == 'run':
-                if start is not None or end is not None: raise ValueError('Run always selects yesterday UTC')
-                start = end = datetime.now(timezone.utc).date() - timedelta(days=1)
-            result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals)
+                # Resume each series from its verified manifests in the cold, up to yesterday UTC.
+                if start is not None or end is not None: raise ValueError('Run always ends yesterday UTC')
+                end = datetime.now(timezone.utc).date() - timedelta(days=1)
+            result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals,
+                                  args.action == 'run')
     except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
                       phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)

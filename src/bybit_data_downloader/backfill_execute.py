@@ -64,6 +64,18 @@ def object_schema(properties, required=None):
             "additionalProperties": False}
 
 
+def manifest_schema(job):
+    """Closed manifest of one verified series day; shared by execution and resume planning."""
+    fields = {key: {"const": value} for key, value in job.items()}
+    fields.update(complete={"const": True}, records={"type": "integer", "minimum": 1},
+                  sha256={"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                  integrity={"const": ("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream"})
+    required = list(fields)
+    if job["type"] == "orderbook":
+        fields["discarded_orderbook_tail_v1"] = {"type": "integer", "minimum": 1}
+    return object_schema(fields, required)
+
+
 def bounds(job):
     start = int(datetime.fromisoformat(job["day"]).replace(tzinfo=timezone.utc).timestamp() * 1000)
     return start, start + DAY
@@ -343,14 +355,7 @@ def execute(jobs, root, client, *, retry=RetryPolicy(), planning_retries=0, plan
                     reason = "missing-or-inconsistent-manifest"
                     try:
                         saved = json.loads(manifest.read_text())
-                        fields = {key: {"const": value} for key, value in job.items()}
-                        fields.update(complete={"const": True}, records={"type": "integer", "minimum": 1},
-                                      sha256={"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                                      integrity={"const": ("container-crc-and-schema" if job["source"] == "archive" else "json-schema-and-grid") + "; sha256-local-not-upstream"})
-                        required = list(fields)
-                        if job["type"] == "orderbook":
-                            fields["discarded_orderbook_tail_v1"] = {"type": "integer", "minimum": 1}
-                        Draft202012Validator(object_schema(fields, required)).validate(saved)
+                        Draft202012Validator(manifest_schema(job)).validate(saved)
                         reason = "sha256-mismatch"
                         if digest(target) != saved["sha256"]: raise BackfillDataError("SHA256 mismatch")
                         reason = "invalid-cached-records"
