@@ -76,6 +76,11 @@ Scrive cinque unit (timer dati, drift, template `bybit-cold-backfill@.service`) 
 B5 esegue daemon-reload e lo stesso bootstrap con `drift <release>`: esito
 success, nessun mismatch; unit byte-identiche al rendering, nessun drop-in,
 NeedDaemonReload=no, FragmentPath esatto, entrambe le coppie legacy masked/inactive.
+Il template è sondato via `@drift`, ma i drop-in di una singola istanza non vi
+compaiono: drift controlla anche ogni istanza `bybit-cold-backfill@*` caricata
+(stessi tre metadati) e fallisce su qualunque unit o directory `.d` specifica di
+un'istanza in `/etc/systemd/system`. Il preflight del backfill esige inoltre che
+la propria invocazione sia fra le istanze controllate.
 Il mount deve esistere sul Dell e contenere i dati cold attesi.
 
 Il timer dati è `bybit-cold.timer`, 03:15 UTC, fino a ieri UTC; quello indipendente di

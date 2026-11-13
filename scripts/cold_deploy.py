@@ -181,6 +181,24 @@ def manager_matches(name, expected):
     return dict(parser['Unit']) == expected  # Closed property schema, all values exact.
 
 
+def loaded_instances(fragment):
+    """Every loaded backfill instance: its own drop-ins never reach the synthetic @drift probe."""
+    expected = dict(FragmentPath=str(fragment), DropInPaths='', NeedDaemonReload='no')
+    output = subprocess.run(['systemctl', 'show', BACKFILL.replace('@.', '@*.'),
+                             '--property=Id,InvocationID,' + ','.join(expected)],
+                            check=True, capture_output=True, text=True).stdout
+    instances = []
+    for block in output.split('\n\n'):  # systemctl separates units by a blank line.
+        if block.strip():
+            parser = ConfigParser(interpolation=None)
+            parser.optionxform = str
+            parser.read_string('[Unit]\n' + block)
+            unit = dict(parser['Unit'])
+            instances.append(dict(unit=unit.get('Id'), invocation=unit.get('InvocationID'),
+                                  matches={key: unit.get(key) for key in expected} == expected))
+    return instances
+
+
 def drift(release, unit_dir):
     with approved_snapshot(release) as (approved, config):
         return approved['_drift'](config, release, unit_dir)
@@ -199,13 +217,18 @@ def _drift(config, release, unit_dir):
         probe = name.replace('@.', '@drift.')
         if not equal or not manager_matches(probe, dict(FragmentPath=str(target), DropInPaths='', NeedDaemonReload='no')):
             mismatches.append(name)
+    instances = loaded_instances(unit_dir / BACKFILL)
+    mismatches += [instance['unit'] for instance in instances if not instance['matches']]
+    # An instance-specific unit or drop-in directory overrides the template for that instance alone.
+    mismatches += sorted(path.name for path in unit_dir.glob(BACKFILL.replace('@.', '@?*.') + '*'))
     for name in LEGACY:
         target = unit_dir / name
         if (not target.is_symlink() or target.readlink() != Path('/dev/null')
                 or not manager_matches(name, dict(ActiveState='inactive', UnitFileState='masked'))):
             mismatches.append(name)
     return dict(outcome='failure' if mismatches else 'success', finding='F-649',
-                timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches)
+                timezone='UTC', checked_at=datetime.now(timezone.utc).isoformat(), mismatches=mismatches,
+                instances=[dict(unit=i['unit'], invocation=i['invocation']) for i in instances])
 
 
 Count = Annotated[int, Field(ge=0)]
@@ -354,7 +377,8 @@ def reap():
     return dict(outcome='success', finding='F-649', timezone='UTC', container=name, stopped=len(listed))
 
 
-def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None, resume=False):
+def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None, resume=False,
+                 instance=False):
     """Fail closed on drift and emit one validated, enriched container record."""
     if (end is None or (start is None) != resume or (start is not None and start > end)
             or end >= datetime.now(timezone.utc).date()):
@@ -363,6 +387,10 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
     check = drift(release, Path('/etc/systemd/system'))
     if check['outcome'] != 'success':
         return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
+    # A backfill instance must have been among the checked ones, or its own overrides went unseen.
+    if instance and name.removeprefix('bybit-cold-') not in [i['invocation'] for i in check.get('instances', [])]:
+        return dict(check, outcome='failure', error='InstanceNotChecked', finding='F-649', phase='preflight',
+                    downloaded=0, skipped=0, records=0)
     config = load_release(release)
     metadata = dict(finding='F-649', timezone='UTC', end_date=end.isoformat(),
                     image=config['image'], image_source_sha=config['image_source_sha'])
@@ -426,7 +454,7 @@ def main(argv=None):
                 if start is not None or end is not None: raise ValueError('Run always ends yesterday UTC')
                 end = datetime.now(timezone.utc).date() - timedelta(days=1)
             result = run_backfill(args.release, start, end, args.dry_run, args.symbols, args.types, args.intervals,
-                                  args.action == 'run')
+                                  args.action == 'run', instance=args.action == 'backfill')
     except (OSError, ValueError, ValidationError, ConfigError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         result = dict(outcome='failure', finding='F-649', error=type(error).__name__,
                       phase='preflight', timezone='UTC', downloaded=0, skipped=0, records=0)
