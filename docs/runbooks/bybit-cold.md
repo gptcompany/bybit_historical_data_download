@@ -72,7 +72,7 @@ working tree. Bootstrap e letture Git dello snapshot ignorano `refs/replace`
 con `--no-replace-objects`: l'identità dello SHA approvato resta invariata.
 L'installer estrae il Git object tree approvato in una directory
 0700 temporanea, usa codice e inventario di quello snapshot e lo elimina.
-Scrive quattro unit e quattro maschere legacy; non avvia né ricarica systemd.
+Scrive cinque unit (timer dati, drift, template `bybit-cold-backfill@.service`) e quattro maschere legacy; non avvia né ricarica systemd.
 B5 esegue daemon-reload e lo stesso bootstrap con `drift <release>`: esito
 success, nessun mismatch; unit byte-identiche al rendering, nessun drop-in,
 NeedDaemonReload=no, FragmentPath esatto, entrambe le coppie legacy masked/inactive.
@@ -87,13 +87,23 @@ eccezioni al confronto: le unit sono confrontate per byte.
 
 ## Piano e backfill del buco
 
-Usare sempre il bootstrap Git sopra, sostituendo l'azione install con backfill.
-Selezioni BTCUSDT,ETHUSDT; giorni chiusi UTC e intervalli espliciti:
+Il backfill gira solo come istanza del template versionato `bybit-cold-backfill@.service`,
+mai dalla sessione: il runner rifiuta di partire senza `INVOCATION_ID` di systemd
+(esito preflight, nessun container). L'istanza porta gli argomenti dell'azione
+backfill, codificati con `systemd-escape`; symbols e intervals hanno già i valori
+BTCUSDT,ETHUSDT e 1m,5m,15m. Giorni chiusi UTC espliciti:
 
 ```text
-backfill <release> --start-date 2026-06-30 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types trade,klines --intervals 1m,5m,15m --dry-run
-backfill <release> --start-date 2026-06-29 --end-date 2026-11-09 --symbols BTCUSDT,ETHUSDT --types orderbook,funding,openinterest,longshortratio --intervals 1m,5m,15m --dry-run
+sudo systemctl start "$(systemd-escape --template=bybit-cold-backfill@.service -- '--start-date 2026-06-30 --end-date 2026-11-09 --types trade,klines --dry-run')"
+sudo systemctl start "$(systemd-escape --template=bybit-cold-backfill@.service -- '--start-date 2026-06-29 --end-date 2026-11-09 --types orderbook,funding,openinterest,longshortratio --dry-run')"
+journalctl -u 'bybit-cold-backfill@*' -o cat
 ```
+
+Il container si chiama `bybit-cold-<INVOCATION_ID>`. Alla fine della unit, anche
+se il runner è stato ucciso, `ExecStopPost` esegue l'azione `reap`, che ferma solo
+quel container con il timeout di stop predefinito di Docker. Il modulo backfill
+gestisce SIGTERM in PID 1: rimuove staging `.part` e scratch `bybit-ids-*`, non
+pubblica e non scrive manifest; il flock si rilascia all'uscita del processo.
 
 Il backfill trade riconosce due intestazioni esatte, la versione originale a dieci colonne e la versione con `RPI` finale. Negli archivi BTCUSDT ed ETHUSDT il 2 aprile 2025 UTC ha l'intestazione originale e il 3 aprile 2025 UTC ha `RPI`. Verifica effettuata con HEAD (200) e GET Range dei primi 8192 byte (206) su entrambi i giorni e simboli. Ogni riga della seconda versione deve avere `RPI` pari a `0` o `1`.
 
@@ -112,8 +122,8 @@ Primo piano: 133 giorni, 1064 file. Secondo: 134 giorni, 1072 file.
 HEAD soltanto per gli archivi trade/ob200: dimensioni attese reali, errore se
 mancanti. Le API riportano dimensioni ignote separatamente. Nessun GET,
 creazione di directory o file in dry-run; il gate drift resta obbligatorio.
-B5 conserva i due piani e, verificati esiti/date/spazio cold, ripete gli stessi
-comandi senza `--dry-run`. Non eseguire contemporaneamente backfill e timer:
+B5 conserva i due piani e, verificati esiti/date/spazio cold, avvia le stesse
+istanze senza `--dry-run`. Non eseguire contemporaneamente backfill e timer:
 il flock sul cold rifiuta una seconda esecuzione, senza conteggi inventati.
 
 ## Quando un giorno è completo

@@ -1,5 +1,6 @@
 """Cold backfill; --dry-run uses HEAD metadata without reading archive bodies."""
 import argparse
+import signal
 import sys
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -117,7 +118,13 @@ def main(argv=None):
         raise OSError("Log emission failed")
 
 
+def terminate(signum, frame):
+    """PID 1 ignores an unhandled SIGTERM: exit through finally blocks, which remove staging."""
+    raise SystemExit(128 + signum)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, terminate)
     try:
         main()
     except Exception:

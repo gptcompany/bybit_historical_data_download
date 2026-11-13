@@ -6,6 +6,7 @@ from configparser import ConfigParser, Error as ConfigError
 from datetime import date, datetime, timedelta, timezone
 import json
 import os
+import re
 import runpy
 import sys
 import zipfile
@@ -52,8 +53,11 @@ def approved_git_command(release, *args):
     return ['git', '--no-replace-objects', '-C', str(release), *args]
 
 
+BACKFILL = "bybit-cold-backfill@.service"
+
+
 def render_units(config, release):
-    """Render exactly one downloader timer and an independent daily drift check."""
+    """Render one downloader timer, an independent drift check and the manual backfill template."""
     config = inventory(config)
     release = str(release)
     if (not Path(release).is_absolute() or any(c not in "/._-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" for c in release)
@@ -62,25 +66,38 @@ def render_units(config, release):
     source = Path(release).name + ':scripts/cold_deploy.py'
     command = approved_git_command(release, 'show', source)
     bootstrap = f"import subprocess;exec(subprocess.check_output({command!r}))"
+    python = f'{release}/.venv/bin/python -I -c "{bootstrap}"'
+    docker = (f"RequiresMountsFor={config['cold_root']}\nAfter=docker.service network-online.target\n"
+              "Requires=docker.service\nWants=network-online.target\n")
     units = {}
     for name, action, hour in (("bybit-cold", "run", "03:15"), ("bybit-cold-drift", "drift", "02:45")):
-        dependencies = (f"RequiresMountsFor={config['cold_root']}\nAfter=docker.service network-online.target\n"
-                        "Requires=docker.service\nWants=network-online.target\n") if action == "run" else ""
+        container = action == "run"
         units[name + ".service"] = (
-            f"[Unit]\nDescription=Bybit cold {action}\n{dependencies}\n[Service]\nType=oneshot\n"
+            f"[Unit]\nDescription=Bybit cold {action}\n{docker if container else ''}\n[Service]\nType=oneshot\n"
             f"User={config['user']}\nEnvironment=TZ=UTC\n"
-            f'ExecStart={release}/.venv/bin/python -I -c "{bootstrap}" {action} {release}\n'
+            f'ExecStart={python} {action} {release}\n'
+            + (f"ExecStopPost={python} reap {release}\n" if container else "") +
             "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")
         units[name + ".timer"] = (
             f"[Unit]\nDescription=Bybit cold {action} UTC\n\n[Timer]\nOnCalendar=*-*-* {hour}:00 UTC\n"
             f"Persistent=true\nUnit={name}.service\n\n[Install]\nWantedBy=timers.target\n")
+    # The instance carries the backfill arguments (systemd-escape); "$VAR" splits them at whitespace.
+    units[BACKFILL] = (
+        f"[Unit]\nDescription=Bybit cold backfill %I\n{docker}\n[Service]\nType=oneshot\n"
+        f'User={config["user"]}\nEnvironment=TZ=UTC\nEnvironment="BYBIT_BACKFILL_ARGS=%I"\n'
+        f"ExecStart={python} backfill {release} $BYBIT_BACKFILL_ARGS\n"
+        f"ExecStopPost={python} reap {release}\n"
+        "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")
     return units
 
 
-def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None):
+def docker_command(config, start: date, end: date, dry_run=False, symbols=None, types=None, intervals=None,
+                   name=None):
     """Run the cold module explicitly, bypassing the image's legacy live command."""
     config = inventory(config)
     command = ["/usr/bin/docker", "run", "--rm", "--pull=never"]
+    if name is not None:
+        command.extend(["--name", name])
     for address in config["dns"]:
         command.extend(["--dns", address])
     command += ["--env", "TZ=UTC",
@@ -150,7 +167,7 @@ def _install(config, release, unit_dir):
             temporary.symlink_to('/dev/null')
             temporary.replace(unit_dir / name)
         finally: temporary.unlink(missing_ok=True)
-    return dict(outcome='success', installed=4, masked=len(LEGACY))
+    return dict(outcome='success', installed=len(render_units(config, Path(release).resolve())), masked=len(LEGACY))
 
 
 def manager_matches(name, expected):
@@ -177,7 +194,9 @@ def _drift(config, release, unit_dir):
             equal = not target.is_symlink() and target.read_bytes() == text.encode()
         except OSError:
             equal = False
-        if not equal or not manager_matches(name, dict(FragmentPath=str(target), DropInPaths='', NeedDaemonReload='no')):
+        # systemctl show rejects template names; an instance reports the template's metadata.
+        probe = name.replace('@.', '@drift.')
+        if not equal or not manager_matches(probe, dict(FragmentPath=str(target), DropInPaths='', NeedDaemonReload='no')):
             mismatches.append(name)
     for name in LEGACY:
         target = unit_dir / name
@@ -316,10 +335,29 @@ def forward_retries(stderr, config, dry_run):
     return state
 
 
+def container_name():
+    """Name the container after this systemd invocation, which ExecStopPost shares."""
+    invocation = os.environ.get('INVOCATION_ID', '')
+    if not re.fullmatch('[0-9a-f]{32}', invocation):
+        raise ValueError('Run only inside a systemd unit')
+    return 'bybit-cold-' + invocation
+
+
+def reap():
+    """ExecStopPost: stop this invocation's container even when the runner was killed."""
+    name = container_name()
+    listed = subprocess.run(['/usr/bin/docker', 'ps', '--all', '--quiet', '--filter', 'name=' + name],
+                            check=True, capture_output=True, text=True).stdout.split()
+    if listed:  # Docker's own stop timeout; SIGTERM makes the backfill remove its staging.
+        subprocess.run(['/usr/bin/docker', 'stop', name], check=True, capture_output=True)
+    return dict(outcome='success', finding='F-649', timezone='UTC', container=name, stopped=len(listed))
+
+
 def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, intervals=None):
     """Fail closed on drift and emit one validated, enriched container record."""
     if start is None or end is None or start > end or end >= datetime.now(timezone.utc).date():
         raise ValueError('Require an ordered range of closed UTC days')
+    name = container_name()
     check = drift(release, Path('/etc/systemd/system'))
     if check['outcome'] != 'success':
         return dict(check, finding='F-649', phase='preflight', downloaded=0, skipped=0, records=0)
@@ -328,7 +366,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
                     image=config['image'], image_source_sha=config['image_source_sha'])
     unknown = dict(metadata, outcome='failure', phase='container', downloaded=None, skipped=None, records=None)
     try:
-        completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals),
+        completed = subprocess.run(docker_command(config, start, end, dry_run, symbols, types, intervals, name),
                                    capture_output=True)
     except OSError:
         return dict(unknown, returncode=None, counts_status='not_started', error='ContainerNotStarted')
@@ -361,7 +399,7 @@ def run_backfill(release, start, end, dry_run=False, symbols=None, types=None, i
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'drift', 'run', 'backfill'])
+    parser.add_argument('action', choices=['install', 'drift', 'run', 'backfill', 'reap'])
     parser.add_argument('release', type=Path)
     parser.add_argument('--approved-sha')
     parser.add_argument('--start-date', type=date.fromisoformat)
@@ -376,6 +414,7 @@ def main(argv=None):
             if not args.approved_sha: raise ValueError('Installation requires approved SHA')
             result = install(args.release, args.approved_sha, Path('/etc/systemd/system'))
         elif args.action == 'drift': result = drift(args.release, Path('/etc/systemd/system'))
+        elif args.action == 'reap': result = reap()
         else:
             start, end = args.start_date, args.end_date
             if args.action == 'run':
