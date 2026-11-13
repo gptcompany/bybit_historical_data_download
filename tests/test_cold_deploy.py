@@ -24,7 +24,8 @@ def unit(text):
 def test_scheduler_render_is_explicit_and_has_no_legacy_authority():
     rendered = render_units(INVENTORY, RELEASE)
     assert set(rendered) == {'bybit-cold.service', 'bybit-cold.timer',
-                             'bybit-cold-drift.service', 'bybit-cold-drift.timer'}
+                             'bybit-cold-drift.service', 'bybit-cold-drift.timer',
+                             'bybit-cold-backfill@.service'}
     service = unit(rendered['bybit-cold.service'])
     assert service['Unit']['RequiresMountsFor'] == INVENTORY['cold_root']
     assert service['Service']['User'] == 'sam'
@@ -69,3 +70,26 @@ def test_docker_command_binds_only_explicit_cold_and_overrides_live_entrypoint(u
     assert 'bash' not in command and 'compose' not in command
     assert '--dry-run' not in command
     assert docker_command(INVENTORY, date(2026, 6, 29), date(2026, 11, 9), dry_run=True)[-1] == '--dry-run'
+
+
+def test_manual_backfill_template_is_byte_identical_and_session_independent():
+    rendered = render_units(INVENTORY, RELEASE)
+    python = (f'{RELEASE}/.venv/bin/python -I -c "import subprocess;exec(subprocess.check_output('
+              f"['git', '--no-replace-objects', '-C', '{RELEASE}', 'show', '{RELEASE.name}:scripts/cold_deploy.py']))\"")
+    assert rendered['bybit-cold-backfill@.service'] == (
+        "[Unit]\nDescription=Bybit cold backfill %I\n"
+        f"RequiresMountsFor={INVENTORY['cold_root']}\nAfter=docker.service network-online.target\n"
+        "Requires=docker.service\nWants=network-online.target\n\n"
+        "[Service]\nType=oneshot\nUser=sam\nEnvironment=TZ=UTC \"BYBIT_BACKFILL_ARGS=%I\"\n"
+        f"ExecStart={python} backfill {RELEASE} $BYBIT_BACKFILL_ARGS\n"
+        f"ExecStopPost={python} reap {RELEASE}\n"
+        "TimeoutStartSec=infinity\nStandardOutput=journal\nStandardError=journal\n")
+    # Every container-starting unit stops its own container after the runner exits or is killed.
+    assert unit(rendered['bybit-cold.service'])['Service']['ExecStopPost'] == f'{python} reap {RELEASE}'
+    assert 'ExecStopPost' not in unit(rendered['bybit-cold-drift.service'])['Service']
+
+
+def test_docker_command_names_the_container_only_when_asked():
+    named = docker_command(INVENTORY, date(2026, 11, 9), date(2026, 11, 9), name='bybit-cold-' + '0' * 32)
+    assert named[named.index('--name') + 1] == 'bybit-cold-' + '0' * 32
+    assert '--name' not in docker_command(INVENTORY, date(2026, 11, 9), date(2026, 11, 9))

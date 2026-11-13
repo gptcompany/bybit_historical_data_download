@@ -15,11 +15,17 @@ CONFIG = dict(image="ghcr.io/gptcompany/bybit-downloader@sha256:" + "a" * 64,
               dns=['1.1.1.1', '9.9.9.9'], cold_root="/data/cold/12TB/bybit_data_downloader/data")
 
 
+def container():
+    return "bybit-cold-" + deploy.os.environ["INVOCATION_ID"]
+
+
 @pytest.fixture
 def docker_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(deploy, "load_release", lambda release: CONFIG)
-    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(outcome="success", mismatches=[]))
+    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(
+        outcome="success", mismatches=[], instances=[dict(unit="bybit-cold-backfill@x.service",
+                                                          invocation=deploy.os.environ["INVOCATION_ID"])]))
     def run(command, **kwargs):
         assert command[0] == "/usr/bin/docker"
         assert not kwargs.get("shell", False)
@@ -44,7 +50,44 @@ def test_daily_entrypoint_ends_yesterday_utc_and_resumes(docker_calls, monkeypat
     assert "--from-last-complete" in command and "--start-date" not in command
     assert command[command.index("--end-date") + 1] == "2026-11-09"
     assert CONFIG["image"] in command and "--pull=never" in command
+    assert command[command.index("--name") + 1] == container()
     assert json.loads(capsys.readouterr().out)["outcome"] == "success"
+
+
+@pytest.mark.parametrize("invocation", [None, "", "not-a-systemd-id"])
+def test_runner_outside_systemd_never_starts_a_session_bound_container(docker_calls, monkeypatch, capsys,
+                                                                       invocation):
+    if invocation is None:
+        monkeypatch.delenv("INVOCATION_ID")
+    else:
+        monkeypatch.setenv("INVOCATION_ID", invocation)
+    assert deploy.main(["run", "/release"]) == 1
+    assert docker_calls == []
+    assert json.loads(capsys.readouterr().out)["phase"] == "preflight"
+
+
+@pytest.mark.parametrize("listed", ["", "4f2a\n"])
+def test_stop_post_stops_only_this_invocation_container(monkeypatch, capsys, listed):
+    calls = []
+    def docker(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=listed if command[1] == "ps" else "", stderr="")
+    monkeypatch.setattr(deploy.subprocess, "run", docker)
+    assert deploy.main(["reap", "/release"]) == 0
+    name = container()
+    assert calls[0] == ["/usr/bin/docker", "ps", "--all", "--quiet", "--filter", "name=" + name]
+    assert calls[1:] == ([["/usr/bin/docker", "stop", name]] if listed else [])
+    assert json.loads(capsys.readouterr().out) == dict(outcome="success", finding="F-649", timezone="UTC",
+                                                       container=name, stopped=int(bool(listed)),
+                                                       events_not_written=0)
+
+
+def test_stop_post_fails_loudly_when_docker_cannot_list(monkeypatch, capsys):
+    def unavailable(command, **kwargs):
+        raise deploy.subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(deploy.subprocess, "run", unavailable)
+    assert deploy.main(["reap", "/release"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "CalledProcessError"
 
 
 def test_backfill_forwards_explicit_selection_and_dry_run(docker_calls, capsys):
@@ -66,6 +109,18 @@ def test_drift_blocks_container(docker_calls, monkeypatch, capsys):
     assert docker_calls == []
     result = json.loads(capsys.readouterr().out)
     assert result["finding"] == "F-649" and result["phase"] == "preflight"
+    assert result["downloaded"] == result["skipped"] == result["records"] == 0
+
+
+@pytest.mark.parametrize("invocation", [None, "f" * 32])
+def test_backfill_preflight_requires_its_own_instance_among_checked(docker_calls, monkeypatch, capsys, invocation):
+    instances = [] if invocation is None else [dict(unit="bybit-cold-backfill@x.service", invocation=invocation)]
+    monkeypatch.setattr(deploy, "drift", lambda release, units: dict(outcome="success", mismatches=[],
+                                                                     instances=instances))
+    assert deploy.main(["backfill", "/release", "--start-date", "2026-06-30", "--end-date", "2026-06-30"]) == 1
+    assert docker_calls == []
+    result = json.loads(capsys.readouterr().out)
+    assert result["phase"] == "preflight" and result["error"] == "InstanceNotChecked"
     assert result["downloaded"] == result["skipped"] == result["records"] == 0
 
 

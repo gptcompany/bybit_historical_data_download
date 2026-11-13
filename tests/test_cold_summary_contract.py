@@ -56,7 +56,8 @@ def test_child_output_contract(scenario, tmp_path, monkeypatch, capsys):
     assert model.model_config["strict"] is True
 
     # Also exercise the runner boundary, including exit status and planning failures.
-    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success", "instances": [
+        {"unit": "bybit-cold-backfill@x.service", "invocation": deploy.os.environ["INVOCATION_ID"]}]})
     monkeypatch.setattr(deploy, "load_release", lambda *args: {"image": "fixture", "image_source_sha": "b" * 40})
     monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
     monkeypatch.setattr(deploy.subprocess, "run", lambda *args, **kwargs:
@@ -113,7 +114,8 @@ def test_retry_events_cross_runner_boundary(scenario, tmp_path, monkeypatch, cap
     events = [json.loads(line) for line in child.err.splitlines()]
     expected = 1 if scenario == "plan" else 3 if scenario == "get_failure" else 2
     assert json.loads(child.out)["retries"] == len(events) == expected
-    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success", "instances": [
+        {"unit": "bybit-cold-backfill@x.service", "invocation": deploy.os.environ["INVOCATION_ID"]}]})
     monkeypatch.setattr(deploy, "load_release", lambda *args:
                         {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
     monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
@@ -140,7 +142,8 @@ def test_runner_forwards_retry_from_existing_summary(tmp_path, monkeypatch, caps
     output = (Path(__file__).parent / "fixtures/dell-trade-run-summary.json").read_text()
     event = dict(event="retry", target="historical/trade/contract/BTCUSDT/file.csv.gz",
                  attempt=1, exception="ReadTimeout", wait_seconds=1.0)
-    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success", "instances": [
+        {"unit": "bybit-cold-backfill@x.service", "invocation": deploy.os.environ["INVOCATION_ID"]}]})
     monkeypatch.setattr(deploy, "load_release", lambda *args:
                         {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
     monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])
@@ -157,7 +160,8 @@ def retry_child(tmp_path, monkeypatch):
     events = [dict(event="retry", target="historical/trade/contract/BTCUSDT/file.csv.gz",
                    attempt=attempt, exception="ReadTimeout", wait_seconds=1.0) for attempt in (1, 2)]
     child = SimpleNamespace(returncode=0, stdout="", stderr="\n".join(map(json.dumps, events)))
-    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success"})
+    monkeypatch.setattr(deploy, "drift", lambda *args: {"outcome": "success", "instances": [
+        {"unit": "bybit-cold-backfill@x.service", "invocation": deploy.os.environ["INVOCATION_ID"]}]})
     monkeypatch.setattr(deploy, "load_release", lambda *args:
                         {"image": "fixture", "image_source_sha": "b" * 40, "cold_root": str(tmp_path)})
     monkeypatch.setattr(deploy, "docker_command", lambda *args: ["offline-child"])

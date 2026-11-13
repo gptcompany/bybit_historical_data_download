@@ -6,15 +6,22 @@ import sys
 import stat
 import zipfile
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
 
+from scripts import cold_deploy as deploy
 from scripts.cold_deploy import drift, install, load_release, render_units
 
 INVENTORY = dict(image='ghcr.io/gptcompany/bybit-downloader@sha256:' + 'b' * 64,
                  image_source_sha='c' * 40, user='sam', uid=1000, gid=1000,
                  dns=['1.1.1.1', '9.9.9.9'], cold_root='/data/cold/12TB/bybit_data_downloader/data')
+# systemd-escape --template=bybit-cold-backfill@.service -- '--start-date 2026-06-30'
+INSTANCE = r'bybit-cold-backfill@\x2d\x2dstart\x2ddate\x202026\x2d06\x2d30.service'
+# drift runs a temporary snapshot copy; only the in-process call is attributed to the module by coverage.
+CHECKS = [pytest.param(drift, id='snapshot'),
+          pytest.param(lambda release, units: deploy._drift(INVENTORY, release, units), id='in-process')]
 
 
 def git(root, *args):
@@ -31,7 +38,14 @@ def systemd_metadata(tmp_path, monkeypatch):
         if args[0] == 'systemctl':
             assert args[1] == 'show'  # Never enable/start/reload from these fixtures.
             name = args[2]
-            values = (dict(FragmentPath=str(tmp_path / 'units' / name),
+            if '*' in name:  # The glob lists every loaded instance; systemctl separates units by a blank line.
+                return subprocess.CompletedProcess(args, 0, '\n'.join(
+                    ''.join(f'{key}={value}\n' for key, value in (dict(
+                        Id=unit, InvocationID='', DropInPaths='', NeedDaemonReload='no',
+                        FragmentPath=str(tmp_path / 'units/bybit-cold-backfill@.service')) | values).items())
+                    for unit, values in overrides.items() if unit.startswith('bybit-cold-backfill@')
+                    and unit != 'bybit-cold-backfill@drift.service'), '')
+            values = (dict(FragmentPath=str(tmp_path / 'units' / name.replace('@drift.', '@.')),
                            DropInPaths='', NeedDaemonReload='no') if name.startswith('bybit-cold')
                       else dict(ActiveState='inactive', UnitFileState='masked'))
             values.update(overrides.get(name, {}))
@@ -79,7 +93,7 @@ def test_install_is_exact_and_retires_both_legacy_schedulers(release, tmp_path):
 
 
 @pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold.timer',
-    'bybit-cold-drift.service', 'bybit-cold-drift.timer', 'bybit-sync.service',
+    'bybit-cold-drift.service', 'bybit-cold-drift.timer', 'bybit-cold-backfill@.service', 'bybit-sync.service',
     'bybit-sync.timer', 'bybit-sync-docker.service', 'bybit-sync-docker.timer'])
 def test_drift_reports_every_modified_or_missing_managed_unit(release, tmp_path, name):
     units = tmp_path / 'units'
@@ -125,6 +139,59 @@ def test_drift_checks_loaded_fragment_dropins_and_reload(release, tmp_path, syst
     result = drift(release, units)
     assert result['outcome'] == 'failure'
     assert result['mismatches'] == ['bybit-cold.service']
+
+
+def test_drift_checks_backfill_template_through_an_instance(release, tmp_path, systemd_metadata):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    assert drift(release, units)['outcome'] == 'success'
+    systemd_metadata['bybit-cold-backfill@drift.service'] = dict(
+        DropInPaths='/etc/systemd/system/bybit-cold-backfill@.service.d/override.conf')
+    assert drift(release, units)['mismatches'] == ['bybit-cold-backfill@.service']
+
+
+@pytest.mark.parametrize('change', [dict(FragmentPath='/usr/lib/systemd/system/bybit-cold-backfill@.service'),
+    dict(DropInPaths=f'/etc/systemd/system/{INSTANCE}.d/override.conf'), dict(NeedDaemonReload='yes')])
+@pytest.mark.parametrize('check', CHECKS)
+def test_drift_checks_every_loaded_backfill_instance(release, tmp_path, systemd_metadata, change, check):
+    # Template on disk and the synthetic @drift probe conform; only the real instance diverges.
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    systemd_metadata[INSTANCE] = {}
+    assert check(release, units)['outcome'] == 'success'
+    systemd_metadata[INSTANCE] = change
+    result = check(release, units)
+    assert result['outcome'] == 'failure' and result['mismatches'] == [INSTANCE]
+
+
+@pytest.mark.parametrize('suffix', ['.d', ''])
+@pytest.mark.parametrize('check', CHECKS)
+def test_drift_reports_instance_specific_files_even_when_not_loaded(release, tmp_path, suffix, check):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    if suffix:
+        (units / (INSTANCE + suffix)).mkdir()
+        (units / (INSTANCE + suffix) / 'override.conf').write_text('[Service]\n')
+    else:
+        (units / INSTANCE).write_text('[Service]\n')  # Shadows the template for this instance.
+    assert check(release, units)['mismatches'] == [INSTANCE + suffix]
+
+
+def test_backfill_preflight_fails_on_an_override_of_its_own_instance(release, tmp_path, systemd_metadata,
+                                                                     monkeypatch):
+    units = tmp_path / 'units'
+    units.mkdir()
+    install(release, release.name, units)
+    monkeypatch.setattr(deploy, 'drift', lambda release, _: drift(release, units))
+    systemd_metadata[INSTANCE] = dict(InvocationID=deploy.os.environ["INVOCATION_ID"],
+                                      DropInPaths=f'/etc/systemd/system/{INSTANCE}.d/override.conf')
+    # The fixture admits only systemctl show and git: a Docker start would raise here.
+    result = deploy.run_backfill(release, date(2026, 6, 30), date(2026, 6, 30))
+    assert result['outcome'] == 'failure' and result['phase'] == 'preflight'
+    assert result['mismatches'] == [INSTANCE] and result['downloaded'] == 0
 
 
 @pytest.mark.parametrize('name', ['bybit-sync.timer', 'bybit-sync-docker.service'])
@@ -245,7 +312,7 @@ def test_replace_ref_cannot_substitute_approved_install_or_drift(replaced_releas
         assert drift(release, units)['mismatches'] == ['bybit-cold.timer']
 
 
-@pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold-drift.service'])
+@pytest.mark.parametrize('name', ['bybit-cold.service', 'bybit-cold-drift.service', 'bybit-cold-backfill@.service'])
 def test_rendered_bootstrap_reads_original_script_with_replace_ref(replaced_release, name):
     from configparser import ConfigParser
     parser = ConfigParser(interpolation=None)
