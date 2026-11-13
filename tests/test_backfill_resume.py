@@ -24,9 +24,11 @@ def trade_day(day):
 def cold(tmp_path, monkeypatch, capsys):
     bodies = {job_for(END - timedelta(days=n), "BTCUSDT", "trade", None)["url"]: trade_day(END - timedelta(days=n))
               for n in range(6)}
-    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
-        200, headers={"Content-Length": str(len(bodies[str(request.url)]))}, content=bodies[str(request.url)])))
-    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client)
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={"Content-Length": str(len(bodies[str(request.url)]))}, content=bodies[str(request.url)]))
+    client = httpx.Client
+    # Each backfill run closes its client; give every run a fresh offline one.
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client(transport=transport))
     root = tmp_path / "cold"
 
     def run(*first):
