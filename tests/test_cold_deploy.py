@@ -68,6 +68,10 @@ def test_docker_command_binds_only_explicit_cold_and_overrides_live_entrypoint(u
     assert '--start-date' in command and '2026-06-29' in command
     assert 'bybit_data_downloader.backfill' in command
     assert 'bash' not in command and 'compose' not in command
+    assert command[command.index('--cpus') + 1] == '0.5'
+    assert command[command.index('--cpu-shares') + 1] == '205'
+    assert command.index('--cpus') < command.index(INVENTORY['image'])
+    assert command.index('--cpu-shares') < command.index(INVENTORY['image'])
     assert '--dry-run' not in command
     assert docker_command(INVENTORY, date(2026, 6, 29), date(2026, 11, 9), dry_run=True)[-1] == '--dry-run'
 
