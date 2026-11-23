@@ -100,6 +100,10 @@ def docker_command(config, start: date | None, end: date, dry_run=False, symbols
         command.extend(["--name", name])
     for address in config["dns"]:
         command.extend(["--dns", address])
+    # Resource-isolation LIMIT (operator decision 2026-11-23): the 7 h backfill took the Dell package to 100 C.
+    # The load lives in the container cgroup, so unit CPUWeight/Nice cannot cap it. 205 = CPUWeight 20 on a
+    # base of 1024; 0.5 CPU keeps the last runs (7h44m max, doubled 15h28m) inside the 24 h timer cadence.
+    command += ["--cpus", "0.5", "--cpu-shares", "205"]
     command += ["--env", "TZ=UTC",
             "--env", "PYTHONPATH=/app/src", "--user", f"{int(config['uid'])}:{int(config['gid'])}",
             "--mount", f"type=bind,src={config['cold_root']},dst=/data", "--entrypoint", "python",
